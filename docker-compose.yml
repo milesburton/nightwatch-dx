@@ -1,0 +1,95 @@
+version: '3.8'
+
+services:
+  # RTL-SDR I/Q Streaming Server
+  rtl-tcp:
+    image: ghcr.io/sdr-enthusiasts/docker-rtlsdr:latest
+    container_name: sdr-rtl-tcp
+    restart: unless-stopped
+    devices:
+      - /dev/bus/usb:/dev/bus/usb
+    privileged: true
+    ports:
+      - "1234:1234"
+    environment:
+      - RTL_TCP_ARGS=-a 0.0.0.0 -f 139150000 -s 2400000 -g 25
+    command: rtl_tcp
+    networks:
+      - sdr-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "1234"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # I/Q Sample Multiplexer
+  multiplexer:
+    build:
+      context: .
+      dockerfile: docker/multiplexer/Dockerfile
+    container_name: sdr-multiplexer
+    restart: unless-stopped
+    depends_on:
+      - rtl-tcp
+    ports:
+      - "1235:1235"
+    environment:
+      - RTL_TCP_HOST=rtl-tcp
+      - RTL_TCP_PORT=1234
+      - MUX_PORT=1235
+    networks:
+      - sdr-network
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "1235"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Band Scanner
+  scanner:
+    build:
+      context: .
+      dockerfile: docker/scanner/Dockerfile
+    container_name: sdr-scanner
+    restart: unless-stopped
+    depends_on:
+      - multiplexer
+    environment:
+      - MUX_HOST=multiplexer
+      - MUX_PORT=1235
+      - LOCK_THRESHOLD=-6
+      - STRONG_THRESHOLD=-4
+      - LOCK_DURATION_MIN=30
+      - LOCK_DURATION_MAX=300
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    networks:
+      - sdr-network
+
+  # CW Decoder (on-demand)
+  decoder:
+    build:
+      context: .
+      dockerfile: docker/decoder/Dockerfile
+    container_name: sdr-decoder
+    restart: "no"  # Run manually when needed
+    depends_on:
+      - multiplexer
+    environment:
+      - MUX_HOST=multiplexer
+      - MUX_PORT=1235
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - sdr-network
+    stdin_open: true
+    tty: true
+
+networks:
+  sdr-network:
+    driver: bridge
+
+volumes:
+  logs:
+  data:
