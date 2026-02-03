@@ -13,5 +13,6 @@ COPY services/multiplexer/iq_multiplexer.py /app/
 # Expose multiplexer port
 EXPOSE 1235
 
-# Run multiplexer
-CMD ["python3", "/app/iq_multiplexer.py", "${RTL_TCP_HOST:-rtl-tcp}", "${RTL_TCP_PORT:-1234}", "${MUX_PORT:-1235}"]
+# Use ENTRYPOINT with sh to properly expand environment variables
+ENTRYPOINT ["/bin/sh", "-c"]
+CMD ["python3 /app/iq_multiplexer.py ${RTL_TCP_HOST:-127.0.0.1} ${RTL_TCP_PORT:-1234} ${MUX_PORT:-1235}"]
