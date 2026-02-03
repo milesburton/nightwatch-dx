@@ -47,3 +47,6 @@ Thumbs.db
 *credential*
 *private*
 config/secrets.yml
+
+# Home lab deployment (local only, not for CI/CD)
+infrastructure/home-lab-deploy/

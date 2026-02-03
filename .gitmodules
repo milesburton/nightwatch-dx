@@ -1,3 +1,0 @@
-[submodule "infrastructure/home-lab-deploy"]
-	path = infrastructure/home-lab-deploy
-	url = https://github.com/milesburton/home-lab-deploy.git
