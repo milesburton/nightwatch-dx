@@ -19,5 +19,5 @@ COPY services/decoder/cw_decoder.py /app/
 # Create logs directory
 RUN mkdir -p /app/logs
 
-# Default command (can be overridden)
-CMD ["python3", "/app/cw_decoder.py", "14.000", "20"]
+# Default command (can be overridden) with unbuffered output
+CMD ["python3", "-u", "/app/cw_decoder.py", "14.000", "20"]

@@ -159,10 +159,20 @@ class IQMultiplexer:
         print("\n" + "="*70)
         print("I/Q MULTIPLEXER")
         print("="*70)
-        
-        if not self.connect_to_rtl_tcp():
+
+        # Retry connection to rtl_tcp with backoff
+        max_retries = 10
+        for attempt in range(max_retries):
+            if self.connect_to_rtl_tcp():
+                break
+            if attempt < max_retries - 1:
+                wait_time = min(2 ** attempt, 30)  # Exponential backoff, max 30s
+                print(f"  Retrying in {wait_time}s... (attempt {attempt + 1}/{max_retries})")
+                time.sleep(wait_time)
+        else:
+            print(f"✗ Failed to connect after {max_retries} attempts")
             return
-        
+
         if not self.start_server():
             return
         

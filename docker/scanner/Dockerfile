@@ -19,5 +19,5 @@ COPY services/scanner/scanner.py /app/
 # Create data directories
 RUN mkdir -p /app/logs /app/data
 
-# Run scanner
-CMD ["python3", "/app/scanner.py", "5"]
+# Run scanner with unbuffered output for immediate logs
+CMD ["python3", "-u", "/app/scanner.py", "5"]
