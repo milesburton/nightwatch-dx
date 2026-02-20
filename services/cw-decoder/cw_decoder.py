@@ -40,12 +40,19 @@ RTL_PORT = int(os.environ.get("RTL_PORT", "1235"))
 WS_PORT  = int(os.environ.get("WS_PORT", "8765"))
 
 CW_FREQ_HZ      = int(os.environ.get("CW_FREQ_HZ", str(14_000_000)))
+SDR_CENTER_HZ   = int(os.environ.get("SDR_CENTER_HZ", str(139_175_000)))
+LO_OFFSET_HZ    = int(os.environ.get("LO_OFFSET_HZ",  str(125_000_000)))
+RF_CENTER_HZ    = SDR_CENTER_HZ - LO_OFFSET_HZ        # 14.175 MHz
 SDR_SAMPLE_RATE = int(os.environ.get("SAMPLE_RATE", str(2_400_000)))
 GAIN            = int(os.environ.get("GAIN", "420"))   # tenths of dB
 
-# Decimate wideband IQ to ~240 kHz before Morse detection
-DECIMATE_FACTOR   = 10
-AUDIO_SAMPLE_RATE = SDR_SAMPLE_RATE // DECIMATE_FACTOR   # 240 000 Hz
+# Frequency offset of target CW frequency from SDR centre (Hz)
+# Positive = target is above centre, negative = below
+FREQ_OFFSET_HZ  = CW_FREQ_HZ - RF_CENTER_HZ           # e.g. -175000 for 14.000 MHz
+
+# Decimate wideband IQ to ~24 kHz (100x) for narrow CW band
+DECIMATE_FACTOR   = 100
+AUDIO_SAMPLE_RATE = SDR_SAMPLE_RATE // DECIMATE_FACTOR   # 24 000 Hz
 
 WPM           = float(os.environ.get("WPM", "20"))
 DIT_SAMPLES   = int((60.0 / (50 * WPM)) * AUDIO_SAMPLE_RATE)
@@ -53,8 +60,8 @@ DAH_THRESHOLD = 2.5
 CHAR_GAP_DITS = 3.0
 WORD_GAP_DITS = 7.0
 
-# LPF cutoff: ~300 Hz as fraction of Nyquist at AUDIO_SAMPLE_RATE (240 kHz)
-ENVELOPE_LPF_CUTOFF = 300.0 / (AUDIO_SAMPLE_RATE / 2.0)
+# LPF cutoff: ~200 Hz as fraction of Nyquist at AUDIO_SAMPLE_RATE (24 kHz)
+ENVELOPE_LPF_CUTOFF = 200.0 / (AUDIO_SAMPLE_RATE / 2.0)
 
 READ_BYTES = 65536
 
@@ -209,10 +216,11 @@ async def decode_loop(raw_q: queue.Queue) -> None:
     morse    = MorseDecoder()
     chars_q: asyncio.Queue = asyncio.Queue()
 
-    tone_on      = False
-    tone_start   = 0
-    gap_start    = 0
-    sample_clock = 0
+    tone_on           = False
+    tone_start        = 0
+    gap_start         = 0
+    sample_clock      = 0   # counts decimated samples — used for Morse timing
+    wideband_clock    = 0   # counts wideband samples — used for freq-mix phase
     # Accumulate IQ until we have a multiple of DECIMATE_FACTOR
     iq_acc = np.zeros(0, dtype=np.complex64)
 
@@ -233,8 +241,9 @@ async def decode_loop(raw_q: queue.Queue) -> None:
             chars_q.task_done()
 
     asyncio.ensure_future(char_sender())
-    log.info("Decode loop — %.0f WPM, dit=%d samples @ %d Hz, LPF=%.1f Hz",
-             WPM, DIT_SAMPLES, AUDIO_SAMPLE_RATE, 300.0)
+    log.info("Decode loop — %.0f WPM, dit=%d samples @ %d Hz, target %.4f MHz (offset %+.1f kHz)",
+             WPM, DIT_SAMPLES, AUDIO_SAMPLE_RATE,
+             CW_FREQ_HZ / 1e6, FREQ_OFFSET_HZ / 1e3)
 
     while True:
         try:
@@ -253,9 +262,16 @@ async def decode_loop(raw_q: queue.Queue) -> None:
         iq_in  = iq_acc[:trim]
         iq_acc = iq_acc[trim:].copy()
 
-        # Decimate I and Q separately (scipy decimate needs real arrays)
-        i_dec = decimate(iq_in.real, DECIMATE_FACTOR, ftype='fir', zero_phase=True)
-        q_dec = decimate(iq_in.imag, DECIMATE_FACTOR, ftype='fir', zero_phase=True)
+        # Mix down to CW target frequency (shift by -FREQ_OFFSET_HZ)
+        t = (wideband_clock + np.arange(len(iq_in))) / SDR_SAMPLE_RATE
+        iq_shifted = iq_in * np.exp(-2j * np.pi * FREQ_OFFSET_HZ * t).astype(np.complex64)
+        wideband_clock += len(iq_in)
+
+        # Decimate 100x in two 10x stages (scipy decimate requires real input)
+        i_dec = decimate(decimate(iq_shifted.real, 10, ftype='fir', zero_phase=True),
+                         10, ftype='fir', zero_phase=True)
+        q_dec = decimate(decimate(iq_shifted.imag, 10, ftype='fir', zero_phase=True),
+                         10, ftype='fir', zero_phase=True)
         iq_dec = (i_dec + 1j * q_dec).astype(np.complex64)
 
         envelope, threshold = detector.process(iq_dec)
