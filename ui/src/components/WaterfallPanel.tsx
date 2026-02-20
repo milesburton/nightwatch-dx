@@ -41,10 +41,10 @@ function buildColorLut(): Uint8ClampedArray {
 
 const COLOR_LUT = buildColorLut();
 
-// Display range chosen to match RTL-SDR HF noise floor (~-46 dBFS):
-// noise floor sits in the lower-mid range (dark blue/cyan), peaks stand out yellow/white
-const DB_MIN = -80;
-const DB_MAX = -20;
+// Measured noise floor ~-44 dBFS, peaks at ~-30 dBFS (15 dB dynamic range).
+// Tight 30 dB window: noise sits at dark-blue end, peaks jump to yellow/white.
+const DB_MIN = -55;
+const DB_MAX = -25;
 const DB_RANGE = DB_MAX - DB_MIN;
 
 function dbToLutIndex(db: number): number {
@@ -280,7 +280,7 @@ export function WaterfallPanel() {
         />
         {/* dB scale labels */}
         <div className="absolute top-0 right-1 h-full flex flex-col justify-between pointer-events-none">
-          {[-20, -35, -50, -65, -80].map((db) => (
+          {[-25, -32, -40, -47, -55].map((db) => (
             <span key={db} className="text-white/30 text-[9px] font-mono leading-none">{db}</span>
           ))}
         </div>
