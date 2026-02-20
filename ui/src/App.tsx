@@ -64,7 +64,10 @@ export default function App() {
             SDR Monitor
           </h1>
           <p className="text-sm text-white/50 tracking-widest uppercase font-medium">
-            Live CW &amp; SSTV decoding from RTL-SDR
+            Live CW &amp; SSTV · 20m · RTL-SDR
+          </p>
+          <p className="text-white/30 text-xs mt-1">
+            v{__APP_VERSION__} · {__BUILD_DATE__}
           </p>
         </header>
 
@@ -93,16 +96,9 @@ export default function App() {
             View on GitHub
           </a>
           {' · '}
-          <span>SSTV decoder from{' '}
-            <a
-              href="https://github.com/milesburton/sstv-toolkit"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-white/60 hover:text-white transition-colors"
-            >
-              sstv-toolkit
-            </a>
-          </span>
+          <span>v{__APP_VERSION__}</span>
+          {' · '}
+          <span>Build {__BUILD_DATE__}</span>
         </footer>
       </div>
     </>
