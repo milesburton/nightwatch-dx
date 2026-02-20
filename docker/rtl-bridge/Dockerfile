@@ -19,6 +19,9 @@ EXPOSE 1235
 # -f 139175000 = 14.175 MHz centre of 20m band + 125 MHz LO
 # -s 2400000   = 2.4 Msps — covers 13.975–14.375 MHz (whole 20m CW+SSTV segment)
 # -g 42        = 42 dB (up from 25 — HF upconverter path needs more gain)
-CMD rtl_tcp -a 0.0.0.0 -p 1234 -f 139175000 -s 2400000 -g 42 -T & \
+# rtl_biast -b 1 must run first to power the NooElec HF upconverter via bias-T,
+# then release the device so rtl_tcp can claim it.
+CMD rtl_biast -b 1 && \
+    rtl_tcp -a 0.0.0.0 -p 1234 -f 139175000 -s 2400000 -g 42 -T & \
     sleep 2 && \
     python3 -u rtl_bridge.py
