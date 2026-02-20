@@ -41,10 +41,15 @@ function buildColorLut(): Uint8ClampedArray {
 
 const COLOR_LUT = buildColorLut();
 
+// Display range chosen to match RTL-SDR HF noise floor (~-46 dBFS):
+// noise floor sits in the lower-mid range (dark blue/cyan), peaks stand out yellow/white
+const DB_MIN = -80;
+const DB_MAX = -20;
+const DB_RANGE = DB_MAX - DB_MIN;
+
 function dbToLutIndex(db: number): number {
-  // Map dBFS range [-90, -10] → [0, 255]
-  const clamped = Math.max(-90, Math.min(-10, db));
-  return Math.round(((clamped + 90) / 80) * 255);
+  const clamped = Math.max(DB_MIN, Math.min(DB_MAX, db));
+  return Math.round(((clamped - DB_MIN) / DB_RANGE) * 255);
 }
 
 // ── 20m band markers ─────────────────────────────────────────────────────────
@@ -125,8 +130,9 @@ export function WaterfallPanel() {
           // Background grid
           specCtx.strokeStyle = 'rgba(255,255,255,0.06)';
           specCtx.lineWidth   = 1;
-          for (let db = -80; db <= -20; db += 10) {
-            const y = Math.round(((db + 90) / 80) * SPECTRUM_HEIGHT);
+          for (let db = DB_MIN; db <= DB_MAX; db += 10) {
+            const normY = (db - DB_MIN) / DB_RANGE;
+            const y = Math.round(normY * SPECTRUM_HEIGHT);
             specCtx.beginPath();
             specCtx.moveTo(0, SPECTRUM_HEIGHT - y);
             specCtx.lineTo(W, SPECTRUM_HEIGHT - y);
@@ -140,8 +146,7 @@ export function WaterfallPanel() {
           const N = bins.length;
           for (let i = 0; i < N; i++) {
             const x = (i / N) * W;
-            const idx = dbToLutIndex(bins[i]);
-            const normY = idx / 255;
+            const normY = (Math.max(DB_MIN, Math.min(DB_MAX, bins[i])) - DB_MIN) / DB_RANGE;
             const y = SPECTRUM_HEIGHT - normY * SPECTRUM_HEIGHT;
             if (i === 0) specCtx.moveTo(x, y);
             else specCtx.lineTo(x, y);
@@ -275,7 +280,7 @@ export function WaterfallPanel() {
         />
         {/* dB scale labels */}
         <div className="absolute top-0 right-1 h-full flex flex-col justify-between pointer-events-none">
-          {[-10, -30, -50, -70, -90].map((db) => (
+          {[-20, -35, -50, -65, -80].map((db) => (
             <span key={db} className="text-white/30 text-[9px] font-mono leading-none">{db}</span>
           ))}
         </div>
