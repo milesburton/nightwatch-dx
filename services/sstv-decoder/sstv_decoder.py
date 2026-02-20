@@ -120,7 +120,7 @@ _DOWN = SDR_SAMPLE_RATE   // gcd(AUDIO_SAMPLE_RATE, SDR_SAMPLE_RATE)
 
 
 def iq_to_audio(raw: bytes) -> np.ndarray:
-    u8 = np.frombuffer(raw, dtype=np.uint8).astype(np.float32)
+    u8 = np.frombuffer(raw, dtype=np.uint8)[:len(raw) & ~1].astype(np.float32)
     i  = (u8[0::2] - 127.5) / 127.5
     q  = (u8[1::2] - 127.5) / 127.5
     iq = i + 1j * q

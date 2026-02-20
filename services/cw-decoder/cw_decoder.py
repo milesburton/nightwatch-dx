@@ -242,8 +242,8 @@ async def decode_loop(raw_q: queue.Queue) -> None:
         except queue.Empty:
             continue
 
-        # uint8 interleaved IQ → complex64
-        u8  = np.frombuffer(raw, dtype=np.uint8).astype(np.float32)
+        # uint8 interleaved IQ → complex64 (truncate to even length)
+        u8  = np.frombuffer(raw, dtype=np.uint8)[:len(raw) & ~1].astype(np.float32)
         iq  = ((u8[0::2] - 127.5) + 1j * (u8[1::2] - 127.5)) / 127.5
 
         iq_acc = np.concatenate([iq_acc, iq.astype(np.complex64)])
