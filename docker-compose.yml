@@ -30,7 +30,7 @@ services:
       RTL_HOST: "rtl-bridge"
       RTL_PORT: "1235"
       WS_PORT: "8765"
-      CW_FREQ_HZ: "14065000"    # 14.065 MHz (measured peak from band scan)
+      CW_FREQ_HZ: "14029000"    # 14.029 MHz (strongest CW signal on band scan)
       SDR_CENTER_HZ: "139175000" # rtl_tcp centre (RF + 125MHz LO)
       LO_OFFSET_HZ: "125000000"  # NooElec upconverter LO
       SAMPLE_RATE: "2400000"    # 2.4 Msps — mixed+decimated 100x to 24 kHz
