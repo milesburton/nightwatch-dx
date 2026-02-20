@@ -73,3 +73,10 @@ export type SSTVSocketMessage =
   | { type: 'frame'; imageData: string; mode: string; ts: string }
   | { type: 'status'; connected: boolean }
   | { type: 'error'; message: string };
+
+// ── Spectrum / waterfall types ────────────────────────────────────────────────
+
+export type SpectrumMessage =
+  | { type: 'fft'; bins: number[]; centerFreq: number; sampleRate: number; ts: string }
+  | { type: 'status'; connected: boolean }
+  | { type: 'error'; message: string };

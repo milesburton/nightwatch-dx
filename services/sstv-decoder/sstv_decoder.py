@@ -1,17 +1,17 @@
 """
 SSTV decoder service.
 
-Monitors a configurable frequency for SSTV signals. When a complete frame
-is detected, it is base64-encoded as a PNG and broadcast to all WebSocket
-clients.
+Monitors 14.230 MHz for SSTV signals via FM demodulation + VIS header
+detection.  Decoded frames are base64-encoded as PNG and broadcast to all
+WebSocket clients.
 
 WebSocket message schema:
   { "type": "frame",  "imageData": "data:image/png;base64,...", "mode": "Robot36", "ts": ISO8601 }
   { "type": "status", "connected": true }
   { "type": "error",  "message": "..." }
 
-SSTV signal flow:
-  rtl_tcp → IQ samples → FM demodulate → detect VIS → decode lines → PNG → WS
+Async IO: same thread+queue pattern as cw_decoder — blocking recv() in a
+dedicated thread, asyncio loop drains via short-timeout run_in_executor.
 """
 
 import asyncio
@@ -20,49 +20,47 @@ import io
 import json
 import logging
 import os
+import queue
 import socket
 import struct
+import threading
+import time
 from datetime import datetime, timezone
+from math import gcd
 
 import numpy as np
 import websockets
 from PIL import Image
-from scipy.signal import butter, lfilter, resample_poly
+from scipy.signal import resample_poly
 
 # ── Configuration ─────────────────────────────────────────────────────────────
 
 RTL_HOST = os.environ.get("RTL_HOST", "rtl-bridge")
-RTL_PORT = int(os.environ.get("RTL_PORT", "1234"))
-WS_PORT = int(os.environ.get("WS_PORT", "8766"))
+RTL_PORT = int(os.environ.get("RTL_PORT", "1235"))
+WS_PORT  = int(os.environ.get("WS_PORT", "8766"))
 
-# SSTV is commonly found on 14.230 MHz USB
-SSTV_FREQ_HZ = int(os.environ.get("SSTV_FREQ_HZ", str(14_230_000)))
-LO_OFFSET_HZ = int(os.environ.get("LO_OFFSET_HZ", str(125_000_000)))
-CENTER_FREQ_HZ = SSTV_FREQ_HZ + LO_OFFSET_HZ
+SSTV_FREQ_HZ    = int(os.environ.get("SSTV_FREQ_HZ", str(14_230_000)))
+SDR_SAMPLE_RATE = int(os.environ.get("SDR_SAMPLE_RATE", str(2_400_000)))
+GAIN            = int(os.environ.get("GAIN", "420"))
 
-SDR_SAMPLE_RATE = int(os.environ.get("SDR_SAMPLE_RATE", str(240_000)))
-AUDIO_SAMPLE_RATE = 48_000  # SSTV decoding target rate
-GAIN = int(os.environ.get("GAIN", "250"))
-
-CHUNK_SIZE = 65536  # IQ bytes per read
+AUDIO_SAMPLE_RATE = 48_000
+READ_BYTES        = 65536
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [SSTV] %(message)s")
 log = logging.getLogger(__name__)
 
 # ── SSTV mode definitions ─────────────────────────────────────────────────────
-# Frequencies: 1200 Hz sync, 1500-2300 Hz pixel
 
 SSTV_MODES = {
-    0x88: {"name": "Robot36",   "lines": 240, "width": 320, "scan_ms": 150.0,  "color": "YUV"},
-    0xAC: {"name": "MartinM1",  "lines": 256, "width": 320, "scan_ms": 146.432,"color": "RGB"},
-    0x3C: {"name": "ScottieS1", "lines": 256, "width": 320, "scan_ms": 138.24, "color": "RGB"},
-    0x5F: {"name": "PD120",     "lines": 496, "width": 640, "scan_ms": 508.48, "color": "PD"},
+    0x88: {"name": "Robot36",   "lines": 240, "width": 320, "scan_ms": 150.0,   "color": "YUV"},
+    0xAC: {"name": "MartinM1",  "lines": 256, "width": 320, "scan_ms": 146.432, "color": "RGB"},
+    0x3C: {"name": "ScottieS1", "lines": 256, "width": 320, "scan_ms": 138.24,  "color": "RGB"},
+    0x5F: {"name": "PD120",     "lines": 496, "width": 640, "scan_ms": 508.48,  "color": "PD"},
 }
 
 FREQ_SYNC  = 1200.0
 FREQ_BLACK = 1500.0
 FREQ_WHITE = 2300.0
-
 
 # ── RTL-TCP helpers ───────────────────────────────────────────────────────────
 
@@ -70,190 +68,167 @@ def rtl_command(sock: socket.socket, cmd: int, param: int) -> None:
     sock.sendall(struct.pack(">BI", cmd, param))
 
 
-async def connect_rtl() -> socket.socket:
+def connect_rtl_sync() -> socket.socket:
     delay = 1.0
     while True:
         try:
-            sock = socket.create_connection((RTL_HOST, RTL_PORT), timeout=5)
+            sock = socket.create_connection((RTL_HOST, RTL_PORT), timeout=10)
             header = sock.recv(12)
             if not header.startswith(b"RTL"):
                 raise ValueError(f"Bad header: {header!r}")
-            rtl_command(sock, 0x01, CENTER_FREQ_HZ)
             rtl_command(sock, 0x02, SDR_SAMPLE_RATE)
             rtl_command(sock, 0x04, GAIN)
             rtl_command(sock, 0x03, 1)
-            log.info("Connected to rtl_tcp, tuned to %.4f MHz", CENTER_FREQ_HZ / 1e6)
+            log.info("Connected %s:%d SDR %d ksps", RTL_HOST, RTL_PORT, SDR_SAMPLE_RATE // 1000)
             return sock
         except (OSError, ValueError) as e:
-            log.warning("rtl_tcp connect failed (%s), retrying in %.0fs", e, delay)
-            await asyncio.sleep(delay)
+            log.warning("Connect failed (%s), retry in %.0fs", e, delay)
+            time.sleep(delay)
             delay = min(delay * 2, 30)
 
 
-# ── FM demodulation ───────────────────────────────────────────────────────────
+# ── Reader thread ─────────────────────────────────────────────────────────────
 
-def fm_demodulate(iq: np.ndarray) -> np.ndarray:
-    """Discriminator-based FM demod → instantaneous frequency deviation."""
-    conj = iq[:-1] * np.conj(iq[1:])
-    return np.angle(conj) * (SDR_SAMPLE_RATE / (2 * np.pi))
+def iq_reader_thread(raw_q: queue.Queue, stop: threading.Event) -> None:
+    while not stop.is_set():
+        sock = connect_rtl_sync()
+        try:
+            while not stop.is_set():
+                data = sock.recv(READ_BYTES)
+                if not data:
+                    log.warning("EOF, reconnecting…")
+                    break
+                try:
+                    raw_q.put(data, timeout=2.0)
+                except queue.Full:
+                    log.debug("IQ queue full — dropping")
+        except (OSError, ConnectionResetError) as e:
+            log.warning("Read error: %s, reconnecting…", e)
+        finally:
+            try:
+                sock.close()
+            except Exception:
+                pass
+        if not stop.is_set():
+            time.sleep(2)
 
 
-def iq_to_audio(raw_bytes: bytes) -> np.ndarray:
-    """Convert raw rtl_tcp uint8 IQ bytes → audio float32 at AUDIO_SAMPLE_RATE."""
-    u8 = np.frombuffer(raw_bytes, dtype=np.uint8).astype(np.float32)
-    i = (u8[0::2] - 127.5) / 127.5
-    q = (u8[1::2] - 127.5) / 127.5
+# ── FM demodulation + resample ────────────────────────────────────────────────
+
+_UP   = AUDIO_SAMPLE_RATE // gcd(AUDIO_SAMPLE_RATE, SDR_SAMPLE_RATE)
+_DOWN = SDR_SAMPLE_RATE   // gcd(AUDIO_SAMPLE_RATE, SDR_SAMPLE_RATE)
+
+
+def iq_to_audio(raw: bytes) -> np.ndarray:
+    u8 = np.frombuffer(raw, dtype=np.uint8).astype(np.float32)
+    i  = (u8[0::2] - 127.5) / 127.5
+    q  = (u8[1::2] - 127.5) / 127.5
     iq = i + 1j * q
-    audio = fm_demodulate(iq)
-    # Resample from SDR_SAMPLE_RATE → AUDIO_SAMPLE_RATE
-    from math import gcd
-    g = gcd(AUDIO_SAMPLE_RATE, SDR_SAMPLE_RATE)
-    up = AUDIO_SAMPLE_RATE // g
-    down = SDR_SAMPLE_RATE // g
-    return resample_poly(audio, up, down).astype(np.float32)
+    # FM discriminator
+    conj   = iq[:-1] * np.conj(iq[1:])
+    fm     = np.angle(conj) * (SDR_SAMPLE_RATE / (2 * np.pi))
+    return resample_poly(fm, _UP, _DOWN).astype(np.float32)
 
 
-# ── SSTV detection & decoding ─────────────────────────────────────────────────
+# ── VIS detection + frame decode ──────────────────────────────────────────────
 
 def goertzel(samples: np.ndarray, target_freq: float, sample_rate: int) -> float:
-    """Goertzel algorithm — power at target_freq."""
     n = len(samples)
     k = round(n * target_freq / sample_rate)
     w = 2 * np.pi * k / n
     coeff = 2 * np.cos(w)
-    s_prev, s_prev2 = 0.0, 0.0
-    for sample in samples:
-        s = sample + coeff * s_prev - s_prev2
-        s_prev2 = s_prev
-        s_prev = s
-    power = s_prev2 ** 2 + s_prev ** 2 - coeff * s_prev * s_prev2
-    return power
+    s1, s2 = 0.0, 0.0
+    for s in samples:
+        s0 = s + coeff * s1 - s2
+        s2, s1 = s1, s0
+    return s2 ** 2 + s1 ** 2 - coeff * s1 * s2
 
 
 class VISDetector:
-    """Detects the SSTV VIS header in a stream of audio samples."""
+    LEADER_MS = 300
+    BIT_MS    = 30
+    F_LEADER  = 1900.0
+    F_START   = 1200.0
+    F_ZERO    = 1300.0
+    F_ONE     = 1100.0
 
-    VIS_LEADER_MS  = 300   # leader tone at 1900 Hz
-    VIS_BREAK_MS   = 10
-    VIS_START_MS   = 300   # start tone at 1200 Hz
-    VIS_BIT_MS     = 30
-
-    FREQ_LEADER = 1900.0
-    FREQ_START  = 1200.0
-    FREQ_ONE    = 1100.0
-    FREQ_ZERO   = 1300.0
-
-    def __init__(self, sample_rate: int) -> None:
-        self._sr = sample_rate
+    def __init__(self, sr: int) -> None:
+        self._sr     = sr
         self._buf: list[float] = []
-        self._state = "idle"
-        self._bits: list[int] = []
-        self._leader_samples = int(self.VIS_LEADER_MS * sample_rate / 1000)
-        self._bit_samples = int(self.VIS_BIT_MS * sample_rate / 1000)
+        self._leader = int(self.LEADER_MS * sr / 1000)
+        self._bit    = int(self.BIT_MS    * sr / 1000)
 
     def feed(self, audio: np.ndarray):
-        """Returns vis_code (int) or None if no VIS detected yet."""
         self._buf.extend(audio.tolist())
-        return self._scan()
-
-    def _scan(self):
-        sr = self._sr
-        buf = self._buf
-
-        # Need at least leader + start + 8 bits + parity + stop
-        min_samples = self._leader_samples + self._bit_samples * 11
-        if len(buf) < min_samples:
+        min_len = self._leader + self._bit * 11
+        if len(self._buf) < min_len:
             return None
-
-        window = int(self._bit_samples * 0.9)
-        for i in range(0, len(buf) - min_samples, window // 2):
-            segment = np.array(buf[i : i + self._leader_samples])
-            p_leader = goertzel(segment, self.FREQ_LEADER, sr)
-            p_sync   = goertzel(segment, self.FREQ_START,  sr)
-            if p_leader < p_sync * 2:
+        step = max(1, self._bit // 2)
+        for i in range(0, len(self._buf) - min_len, step):
+            seg = np.array(self._buf[i : i + self._leader])
+            if goertzel(seg, self.F_LEADER, self._sr) < \
+               goertzel(seg, self.F_START, self._sr) * 2:
                 continue
-            # Found leader candidate — try to read VIS bits
-            vis_start = i + self._leader_samples + int(self.VIS_BREAK_MS * sr / 1000)
-            # Start bit at 1200 Hz
-            seg_start = np.array(buf[vis_start : vis_start + self._bit_samples])
-            if len(seg_start) < self._bit_samples:
+            vs = i + self._leader + int(10 * self._sr / 1000)
+            seg_s = np.array(self._buf[vs : vs + self._bit])
+            if len(seg_s) < self._bit:
                 continue
-            p_start = goertzel(seg_start, self.FREQ_START, sr)
-            if p_start < 1e-6:
-                continue
-            # Read 7 data bits + 1 parity
             bits = []
             for b in range(8):
-                offset = vis_start + self._bit_samples * (1 + b)
-                seg = np.array(buf[offset : offset + self._bit_samples])
-                if len(seg) < self._bit_samples:
+                off = vs + self._bit * (1 + b)
+                seg_b = np.array(self._buf[off : off + self._bit])
+                if len(seg_b) < self._bit:
                     break
-                p0 = goertzel(seg, self.FREQ_ZERO, sr)
-                p1 = goertzel(seg, self.FREQ_ONE,  sr)
-                bits.append(0 if p0 > p1 else 1)
+                bits.append(0 if goertzel(seg_b, self.F_ZERO, self._sr) >
+                                 goertzel(seg_b, self.F_ONE, self._sr) else 1)
             if len(bits) < 8:
                 continue
-            vis_code = sum(bits[b] << b for b in range(7))
-            if vis_code in SSTV_MODES:
-                frame_end = vis_start + self._bit_samples * 9
-                # Trim buffer to just after VIS header
-                self._buf = buf[frame_end:]
-                return vis_code, frame_end
-
-        # Trim old data to avoid unbounded growth
-        if len(buf) > min_samples * 4:
-            self._buf = buf[-min_samples * 2:]
+            vis = sum(bits[b] << b for b in range(7))
+            if vis in SSTV_MODES:
+                end = vs + self._bit * 9
+                self._buf = self._buf[end:]
+                return vis
+        if len(self._buf) > min_len * 4:
+            self._buf = self._buf[-min_len * 2:]
         return None
 
 
 class SSTVFrameDecoder:
-    """Decodes a single SSTV frame from audio samples."""
-
-    def __init__(self, mode: dict, sample_rate: int) -> None:
+    def __init__(self, mode: dict, sr: int) -> None:
         self._mode = mode
-        self._sr = sample_rate
+        self._sr   = sr
 
-    def decode(self, audio: np.ndarray) -> Image.Image | None:
-        """Returns a PIL Image or None if not enough data."""
-        mode = self._mode
-        lines = mode["lines"]
-        width = mode["width"]
-        scan_samples = int(mode["scan_ms"] * self._sr / 1000)
-        total_samples = scan_samples * lines
+    def decode(self, audio: np.ndarray):
+        mode        = self._mode
+        lines       = mode["lines"]
+        width       = mode["width"]
+        scan_samps  = int(mode["scan_ms"] * self._sr / 1000)
+        needed      = scan_samps * lines
 
-        if len(audio) < total_samples:
+        if len(audio) < needed:
             return None
 
         pixels = np.zeros((lines, width, 3), dtype=np.uint8)
-
         for line in range(lines):
-            line_audio = audio[line * scan_samples : (line + 1) * scan_samples]
-            # Map frequency → pixel value
-            # FREQ_BLACK=1500 → 0, FREQ_WHITE=2300 → 255
+            seg = audio[line * scan_samps : (line + 1) * scan_samps]
             for x in range(width):
-                sample_idx = int(x * scan_samples / width)
-                chunk = line_audio[max(0, sample_idx - 2) : sample_idx + 3]
+                idx   = int(x * scan_samps / width)
+                chunk = seg[max(0, idx - 2) : idx + 3]
                 if len(chunk) == 0:
                     continue
-                # Rough instantaneous frequency via zero-crossing rate
-                # For proper decoding use Goertzel at each pixel — simplified here
-                freq = np.mean(chunk) + 1900.0  # bias from FM demod
-                pv = int(np.clip((freq - FREQ_BLACK) / (FREQ_WHITE - FREQ_BLACK) * 255, 0, 255))
-
-                if mode["color"] == "RGB":
-                    # R/G/B encoded in 3 separate passes per line — simplified: grayscale
-                    pixels[line, x] = [pv, pv, pv]
-                else:
-                    pixels[line, x] = [pv, pv, pv]
-
+                freq  = float(np.mean(chunk)) + 1900.0
+                pv    = int(np.clip(
+                    (freq - FREQ_BLACK) / (FREQ_WHITE - FREQ_BLACK) * 255,
+                    0, 255,
+                ))
+                pixels[line, x] = [pv, pv, pv]
         return Image.fromarray(pixels, "RGB")
 
 
 def image_to_data_url(img: Image.Image) -> str:
     buf = io.BytesIO()
     img.save(buf, format="PNG")
-    b64 = base64.b64encode(buf.getvalue()).decode()
-    return f"data:image/png;base64,{b64}"
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
 # ── WebSocket server ──────────────────────────────────────────────────────────
@@ -279,97 +254,79 @@ async def ws_handler(websocket) -> None:
         log.info("WS client disconnected (total: %d)", len(CLIENTS))
 
 
-# ── Main decode loop ──────────────────────────────────────────────────────────
+# ── Decode loop ───────────────────────────────────────────────────────────────
 
-async def decode_loop() -> None:
+async def decode_loop(raw_q: queue.Queue) -> None:
+    loop         = asyncio.get_running_loop()
     vis_detector = VISDetector(AUDIO_SAMPLE_RATE)
-    audio_buf = np.array([], dtype=np.float32)
-    decoding_mode: dict | None = None
-    frame_audio_needed = 0
+    audio_buf    = np.array([], dtype=np.float32)
+    active_mode  = None
+    needed_audio = 0
+
+    log.info("Monitoring %.4f MHz for SSTV", SSTV_FREQ_HZ / 1e6)
 
     while True:
         try:
-            sock = await connect_rtl()
-        except Exception as e:
-            log.error("Cannot connect rtl_tcp: %s", e)
-            await asyncio.sleep(5)
+            raw = await loop.run_in_executor(None, lambda: raw_q.get(timeout=1.0))
+        except queue.Empty:
             continue
 
-        log.info("SSTV monitoring %.4f MHz", SSTV_FREQ_HZ / 1e6)
-        raw_buf = b""
+        audio    = iq_to_audio(raw)
+        audio_buf = np.concatenate([audio_buf, audio])
 
-        try:
-            while True:
-                chunk = await asyncio.get_event_loop().run_in_executor(
-                    None, sock.recv, CHUNK_SIZE
-                )
-                if not chunk:
-                    break
-                raw_buf += chunk
+        if active_mode is None:
+            result = vis_detector.feed(audio)
+            if result is not None:
+                active_mode  = SSTV_MODES[result]
+                needed_audio = int(
+                    active_mode["scan_ms"] * AUDIO_SAMPLE_RATE / 1000
+                ) * active_mode["lines"]
+                log.info("VIS 0x%02X (%s) — collecting %.1fs of audio",
+                         result, active_mode["name"], needed_audio / AUDIO_SAMPLE_RATE)
+                audio_buf = np.array([], dtype=np.float32)
+        else:
+            if len(audio_buf) >= needed_audio:
+                frame_audio = audio_buf[:needed_audio]
+                audio_buf   = audio_buf[needed_audio:]
+                img = SSTVFrameDecoder(active_mode, AUDIO_SAMPLE_RATE).decode(frame_audio)
+                if img is not None:
+                    data_url = image_to_data_url(img)
+                    ts = datetime.now(timezone.utc).isoformat()
+                    await broadcast({
+                        "type": "frame",
+                        "imageData": data_url,
+                        "mode": active_mode["name"],
+                        "ts": ts,
+                    })
+                    log.info("Frame decoded: %s at %s", active_mode["name"], ts)
+                active_mode  = None
+                vis_detector = VISDetector(AUDIO_SAMPLE_RATE)
 
-                # Process in complete blocks
-                block_size = CHUNK_SIZE
-                while len(raw_buf) >= block_size:
-                    raw = raw_buf[:block_size]
-                    raw_buf = raw_buf[block_size:]
-                    audio = iq_to_audio(raw)
-                    audio_buf = np.concatenate([audio_buf, audio])
-
-                    if decoding_mode is None:
-                        result = vis_detector.feed(audio)
-                        if result is not None:
-                            vis_code, _ = result
-                            decoding_mode = SSTV_MODES[vis_code]
-                            frame_audio_needed = int(
-                                decoding_mode["scan_ms"] * AUDIO_SAMPLE_RATE / 1000
-                            ) * decoding_mode["lines"]
-                            log.info("VIS detected: 0x%02X (%s) — collecting frame", vis_code, decoding_mode["name"])
-                            audio_buf = np.array([], dtype=np.float32)
-                    else:
-                        if len(audio_buf) >= frame_audio_needed:
-                            frame_audio = audio_buf[:frame_audio_needed]
-                            audio_buf = audio_buf[frame_audio_needed:]
-
-                            decoder = SSTVFrameDecoder(decoding_mode, AUDIO_SAMPLE_RATE)
-                            img = decoder.decode(frame_audio)
-                            if img is not None:
-                                data_url = image_to_data_url(img)
-                                ts = datetime.now(timezone.utc).isoformat()
-                                await broadcast({
-                                    "type": "frame",
-                                    "imageData": data_url,
-                                    "mode": decoding_mode["name"],
-                                    "ts": ts,
-                                })
-                                log.info("SSTV frame decoded: %s at %s", decoding_mode["name"], ts)
-
-                            decoding_mode = None
-                            vis_detector = VISDetector(AUDIO_SAMPLE_RATE)
-
-                    # Keep audio buffer bounded
-                    max_audio = AUDIO_SAMPLE_RATE * 30
-                    if len(audio_buf) > max_audio:
-                        audio_buf = audio_buf[-max_audio:]
-
-        except (OSError, ConnectionResetError) as e:
-            log.warning("rtl_tcp lost: %s, reconnecting…", e)
-            try:
-                sock.close()
-            except Exception:
-                pass
-            await asyncio.sleep(2)
-            vis_detector = VISDetector(AUDIO_SAMPLE_RATE)
-            audio_buf = np.array([], dtype=np.float32)
-            decoding_mode = None
+        # Cap audio buffer
+        if len(audio_buf) > AUDIO_SAMPLE_RATE * 60:
+            audio_buf = audio_buf[-AUDIO_SAMPLE_RATE * 30:]
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 async def main() -> None:
-    log.info("SSTV decoder starting — WebSocket port %d, SSTV freq %.4f MHz", WS_PORT, SSTV_FREQ_HZ / 1e6)
+    log.info("SSTV decoder — WS :%d, %.4f MHz, %d ksps",
+             WS_PORT, SSTV_FREQ_HZ / 1e6, SDR_SAMPLE_RATE // 1000)
+
+    raw_q = queue.Queue(maxsize=64)
+    stop  = threading.Event()
+    threading.Thread(
+        target=iq_reader_thread, args=(raw_q, stop),
+        daemon=True, name="sstv-iq-reader",
+    ).start()
+
     ws_server = await websockets.serve(ws_handler, "0.0.0.0", WS_PORT)
-    log.info("WebSocket server listening on :%d", WS_PORT)
-    await asyncio.gather(ws_server.serve_forever(), decode_loop())
+    log.info("WebSocket on :%d", WS_PORT)
+
+    try:
+        await asyncio.gather(ws_server.serve_forever(), decode_loop(raw_q))
+    finally:
+        stop.set()
 
 
 if __name__ == "__main__":

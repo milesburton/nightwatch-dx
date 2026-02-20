@@ -31,9 +31,8 @@ services:
       RTL_PORT: "1235"
       WS_PORT: "8765"
       CW_FREQ_HZ: "14000000"    # 14.000 MHz CW calling frequency
-      LO_OFFSET_HZ: "125000000" # NooElec upconverter LO
-      SAMPLE_RATE: "240000"
-      GAIN: "250"
+      SAMPLE_RATE: "2400000"    # 2.4 Msps — decimated 10x internally to 240 kHz
+      GAIN: "420"               # 42.0 dB (tenths of dB)
       WPM: "20"
 
   # ── SSTV decoder ──────────────────────────────────────────────────────────
@@ -50,9 +49,24 @@ services:
       RTL_PORT: "1235"
       WS_PORT: "8766"
       SSTV_FREQ_HZ: "14230000"  # 14.230 MHz SSTV calling frequency
-      LO_OFFSET_HZ: "125000000"
-      SDR_SAMPLE_RATE: "240000"
-      GAIN: "250"
+      SAMPLE_RATE: "2400000"
+      GAIN: "420"
+
+  # ── Spectrum / waterfall ───────────────────────────────────────────────────
+  spectrum:
+    build:
+      context: .
+      dockerfile: docker/spectrum/Dockerfile
+    container_name: sdr-spectrum
+    restart: unless-stopped
+    depends_on:
+      - rtl-bridge
+    environment:
+      RTL_HOST: "rtl-bridge"
+      RTL_PORT: "1235"
+      WS_PORT: "8767"
+      RF_CENTER_HZ: "14175000"  # 14.175 MHz — centre of 20m CW+SSTV segment
+      SAMPLE_RATE: "2400000"
 
   # ── Web UI ────────────────────────────────────────────────────────────────
   ui:
@@ -64,5 +78,6 @@ services:
     depends_on:
       - cw-decoder
       - sstv-decoder
+      - spectrum
     ports:
       - "8080:80"

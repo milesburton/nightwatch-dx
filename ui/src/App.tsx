@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { CWPanel } from './components/CWPanel.js';
 import { SSTVPanel } from './components/SSTVPanel.js';
+import { WaterfallPanel } from './components/WaterfallPanel.js';
 
 function useStarfield() {
   useEffect(() => {
@@ -67,15 +68,18 @@ export default function App() {
           </p>
         </header>
 
-        <main className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* CW panel */}
-          <div className="glass rounded-2xl p-8">
-            <CWPanel />
-          </div>
+        <main className="flex flex-col gap-6">
+          {/* Spectrum / waterfall — full width */}
+          <WaterfallPanel />
 
-          {/* SSTV panel */}
-          <div className="glass rounded-2xl p-8">
-            <SSTVPanel />
+          {/* CW + SSTV side by side */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="glass rounded-2xl p-8">
+              <CWPanel />
+            </div>
+            <div className="glass rounded-2xl p-8">
+              <SSTVPanel />
+            </div>
           </div>
         </main>
 
