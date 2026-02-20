@@ -1,0 +1,5 @@
+numpy
+scipy
+websockets
+Pillow
+pysstv

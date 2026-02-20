@@ -8,7 +8,12 @@ env/
 venv/
 ENV/
 *.egg-info/
-dist/
+
+# Node / frontend
+node_modules/
+ui/dist/
+
+# Build
 build/
 
 # IDE
@@ -24,8 +29,6 @@ logs/
 
 # Data
 data/
-*.json
-*.csv
 tmp/
 
 # Docker
@@ -35,11 +38,6 @@ tmp/
 .DS_Store
 Thumbs.db
 
-# Project specific
-*.wav
-*.png
-*.jpg
-
 # Sensitive - DO NOT COMMIT
 *secret*
 *password*
@@ -47,6 +45,3 @@ Thumbs.db
 *credential*
 *private*
 config/secrets.yml
-
-# Home lab deployment (local only, not for CI/CD)
-infrastructure/home-lab-deploy/

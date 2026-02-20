@@ -1,67 +1,68 @@
-# Docker Compose for GMKtec SDR Project (Bare Metal)
 services:
-  # RTL-SDR I/Q Streaming Server
-  rtl-tcp:
-    image: debian:bookworm-slim
-    container_name: sdr-rtl-tcp
+
+  # ── RTL-SDR hardware interface + IQ multiplexer ───────────────────────────
+  rtl-bridge:
+    build:
+      context: .
+      dockerfile: docker/rtl-bridge/Dockerfile
+    container_name: sdr-rtl-bridge
     restart: unless-stopped
     devices:
       - /dev/bus/usb:/dev/bus/usb
     privileged: true
-    network_mode: host
-    command: >
-      sh -c "apt-get update -qq && apt-get install -y -qq rtl-sdr &&
-             rtl_biast -d 0 -b 1 &&
-             rtl_tcp -a 0.0.0.0 -f 139150000 -s 2400000 -g 25"
+    ports:
+      - "1235:1235"   # multiplexer port (external access if needed)
+    environment:
+      RTL_TCP_HOST: "127.0.0.1"
+      RTL_TCP_PORT: "1234"
+      MUX_PORT: "1235"
 
-  # I/Q Sample Multiplexer
-  multiplexer:
+  # ── CW (Morse code) decoder ───────────────────────────────────────────────
+  cw-decoder:
     build:
       context: .
-      dockerfile: docker/multiplexer/Dockerfile
-    container_name: sdr-multiplexer
+      dockerfile: docker/cw-decoder/Dockerfile
+    container_name: sdr-cw-decoder
     restart: unless-stopped
     depends_on:
-      - rtl-tcp
-    network_mode: host
+      - rtl-bridge
     environment:
-      - RTL_TCP_HOST=127.0.0.1
-      - RTL_TCP_PORT=1234
-      - MUX_PORT=1235
+      RTL_HOST: "rtl-bridge"
+      RTL_PORT: "1235"
+      WS_PORT: "8765"
+      CW_FREQ_HZ: "14000000"    # 14.000 MHz CW calling frequency
+      LO_OFFSET_HZ: "125000000" # NooElec upconverter LO
+      SAMPLE_RATE: "240000"
+      GAIN: "250"
+      WPM: "20"
 
-  # Band Scanner
-  scanner:
+  # ── SSTV decoder ──────────────────────────────────────────────────────────
+  sstv-decoder:
     build:
       context: .
-      dockerfile: docker/scanner/Dockerfile
-    container_name: sdr-scanner
+      dockerfile: docker/sstv-decoder/Dockerfile
+    container_name: sdr-sstv-decoder
     restart: unless-stopped
     depends_on:
-      - multiplexer
-    network_mode: host
+      - rtl-bridge
     environment:
-      - MUX_HOST=127.0.0.1
-      - MUX_PORT=1235
-      - LOCK_THRESHOLD=-6
-      - STRONG_THRESHOLD=-4
-    volumes:
-      - ./logs:/app/logs
-      - ./data:/app/data
+      RTL_HOST: "rtl-bridge"
+      RTL_PORT: "1235"
+      WS_PORT: "8766"
+      SSTV_FREQ_HZ: "14230000"  # 14.230 MHz SSTV calling frequency
+      LO_OFFSET_HZ: "125000000"
+      SDR_SAMPLE_RATE: "240000"
+      GAIN: "250"
 
-  # CW Decoder (on-demand)
-  decoder:
+  # ── Web UI ────────────────────────────────────────────────────────────────
+  ui:
     build:
       context: .
-      dockerfile: docker/decoder/Dockerfile
-    container_name: sdr-decoder
-    restart: "no"
+      dockerfile: docker/ui/Dockerfile
+    container_name: sdr-ui
+    restart: unless-stopped
     depends_on:
-      - multiplexer
-    network_mode: host
-    environment:
-      - MUX_HOST=127.0.0.1
-      - MUX_PORT=1235
-    volumes:
-      - ./logs:/app/logs
-    stdin_open: true
-    tty: true
+      - cw-decoder
+      - sstv-decoder
+    ports:
+      - "8080:80"

@@ -1,0 +1,12 @@
+FROM node:22-slim AS builder
+
+WORKDIR /app
+COPY ui/package*.json ./
+RUN npm ci
+COPY ui/ .
+RUN npm run build
+
+FROM nginx:alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY docker/ui/nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80
