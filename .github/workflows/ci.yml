@@ -63,3 +63,18 @@ jobs:
 
     - name: Build ui
       run: docker compose build ui
+
+  deploy:
+    name: Deploy to home lab
+    runs-on: self-hosted
+    needs: docker
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Pull and restart services
+      working-directory: /home/miles/gmktec-sdr-project
+      run: |
+        git pull
+        docker compose up -d --build
