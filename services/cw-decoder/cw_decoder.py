@@ -156,9 +156,11 @@ class CWSignalChain:
                 p5, p90, spread, self._threshold,
             )
 
-        if spread < 0.01 or p5 < 1e-9:
+        if p5 < 1e-9:
             return
-        # Threshold = midpoint between noise floor (p5) and signal peaks (p90)
+        # Threshold = midpoint between noise floor (p5) and signal peaks (p90).
+        # Even a small spread (weak HF signal 7 dB above noise) is enough to set
+        # a valid threshold — the Schmitt hysteresis handles noise immunity.
         self._threshold = p5 + spread * 0.5
 
     def process(self, raw: bytes) -> list[dict]:
