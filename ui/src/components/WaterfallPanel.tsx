@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { addIQListener } from './CWPanel.js';
+import { addIQListener } from '../workers/iqWorkerSingleton.js';
 
 // ── Colour LUT (black → blue → cyan → yellow → white) ───────────────────────
 

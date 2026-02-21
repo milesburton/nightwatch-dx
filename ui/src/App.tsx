@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
-import { CWPanel } from './components/CWPanel.js';
-import { SSTVPanel } from './components/SSTVPanel.js';
+import { CWLogPanel } from './components/CWLogPanel.js';
+import { SSTVGalleryPanel } from './components/SSTVGalleryPanel.js';
 import { WaterfallPanel } from './components/WaterfallPanel.js';
 
 function useStarfield() {
@@ -75,15 +75,11 @@ export default function App() {
           {/* Spectrum / waterfall — full width */}
           <WaterfallPanel />
 
-          {/* CW + SSTV side by side */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <div className="glass rounded-2xl p-8">
-              <CWPanel />
-            </div>
-            <div className="glass rounded-2xl p-8">
-              <SSTVPanel />
-            </div>
-          </div>
+          {/* CW session log — full width (master-detail needs horizontal space) */}
+          <CWLogPanel />
+
+          {/* SSTV auto-detect gallery */}
+          <SSTVGalleryPanel />
         </main>
 
         <footer className="text-center text-white/40 py-6 text-sm mt-6">
