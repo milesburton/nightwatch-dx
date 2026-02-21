@@ -168,6 +168,12 @@ export function WaterfallPanel() {
 
       if (!wfDataRef.current || wfDataRef.current.width !== W || wfDataRef.current.height !== WATERFALL_ROWS) {
         wfDataRef.current = wfCtx.createImageData(W, WATERFALL_ROWS);
+        // Pre-fill alpha to 255 so all rows are opaque black until data arrives.
+        // createImageData initialises to all-zero which makes pixels transparent,
+        // causing the canvas to show the page background instead of black.
+        for (let i = 3; i < wfDataRef.current.data.length; i += 4) {
+          wfDataRef.current.data[i] = 255;
+        }
       }
       const wfData = wfDataRef.current;
 
