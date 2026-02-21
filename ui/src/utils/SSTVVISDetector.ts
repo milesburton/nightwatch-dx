@@ -4,127 +4,137 @@
  * Detects the standard SSTV VIS preamble in a demodulated audio stream
  * (output of FM discriminator on the IQ worker's SSTV signal chain):
  *
- *   Leader   : 300 ms of 1900 Hz tone
- *   Break    :  10 ms of 1200 Hz
- *   Start bit:  30 ms of 1900 Hz
- *   VIS bits : 8 × 30 ms (bit1 = 1100 Hz, bit0 = 1300 Hz)
- *   Stop bit :  30 ms of 1200 Hz
+ *   Leader   : 300 ms of 1900 Hz tone  (= 30 × 10 ms windows)
+ *   Break    :  10 ms of 1200 Hz       (=  1 × 10 ms window)
+ *   Start bit:  30 ms of 1900 Hz       (=  3 × 10 ms windows)
+ *   VIS bits : 8 × 30 ms               (=  3 × 10 ms windows each)
+ *   Stop bit :  30 ms of 1200 Hz       (=  3 × 10 ms windows)
  *
- * Once the stop bit is confirmed, the detector switches to BUFFERING mode and
- * accumulates exactly `frameSamples` more samples, then emits the complete
- * Float32Array for decoding.
+ * Window size is 10 ms — the GCD of all VIS segment durations — so every
+ * segment boundary falls on a clean window edge.
  *
- * If the VIS code is not in the known-modes table, the detector resets.
+ * Once the stop bit is confirmed the detector switches to BUFFERING mode.
+ * The emitted Float32Array contains the FULL transmission from the start of
+ * the leader tone, so that SSTVDecoder.detectMode() can find the preamble.
  *
  * Audio sample rate assumed: 24 000 Hz (audio output of the SSTV signal chain).
  */
 
-// Known SSTV modes: visCode → total frame duration in seconds
-// Durations are conservative upper bounds (sync + image) so we capture the full frame.
+// Known SSTV modes: visCode → total frame duration in seconds (image only, after VIS)
 const VIS_DURATIONS: Record<number, number> = {
-  0x08: 240 * (0.009 + 0.003 + 0.15),    // Robot 36   ~38.9 s
-  0x5f: 496 * (0.02  + 0.00208 + 0.532), // PD 120    ~274 s
-  0x2c: 256 * (0.004862 + 0.000572 + 3 * 0.146 + 2 * 0.000572), // Martin M1 ~116 s
-  0x3c: 256 * (0.009 + 0.0015 + 3 * 0.138 + 0.0015),            // Scottie S1 ~108 s
+  8:  240 * (0.009 + 0.003 + 0.15),    // Robot 36   (0x08) ~38.9 s
+  95: 496 * (0.02  + 0.00208 + 0.532), // PD 120     (0x5f) ~274 s
+  44: 256 * (0.004862 + 0.000572 + 3 * 0.146 + 2 * 0.000572), // Martin M1  (0x2c) ~116 s
+  60: 256 * (0.009 + 0.0015 + 3 * 0.138 + 0.0015),            // Scottie S1 (0x3c) ~108 s
 };
 
-// ── Goertzel algorithm ────────────────────────────────────────────────────────
+// ── Frequency classification ──────────────────────────────────────────────────
+//
+// The input to this detector is FM-discriminated audio: each sample is already
+// an instantaneous frequency value in Hz (output of atan2 discriminator).
+// We classify each 10ms window by averaging its samples and finding the closest
+// VIS reference frequency.  No Goertzel needed — the discriminator has already
+// done the frequency-domain work.
 
-/**
- * Compute the Goertzel power at `targetHz` for a block of `samples`.
- * Returns normalised magnitude squared (not dB).
- */
-function goertzelPower(samples: Float32Array, sampleRate: number, targetHz: number): number {
-  const k     = Math.round(samples.length * targetHz / sampleRate);
-  const omega = (2 * Math.PI * k) / samples.length;
-  const coeff = 2 * Math.cos(omega);
-  let s0 = 0, s1 = 0, s2 = 0;
-  for (const x of samples) {
-    s0 = x + coeff * s1 - s2;
-    s2 = s1;
-    s1 = s0;
-  }
-  const power = s1 * s1 + s2 * s2 - coeff * s1 * s2;
-  return power / (samples.length * samples.length);
-}
+const VIS_FREQS = [1100, 1200, 1300, 1900] as const;
+const TOLERANCE = 100; // Hz — accept ±100 Hz from each reference
 
-/** Classify a 30ms window as the dominant tone (1100, 1200, 1300, or 1900 Hz). */
-function dominantTone(samples: Float32Array, sampleRate: number): number {
-  const freqs  = [1100, 1200, 1300, 1900];
+function dominantTone(samples: Float32Array): number {
+  let sum = 0;
+  for (const x of samples) sum += x;
+  const mean = sum / samples.length;
+
   let bestFreq = 0;
-  let bestPow  = -1;
-  for (const f of freqs) {
-    const p = goertzelPower(samples, sampleRate, f);
-    if (p > bestPow) { bestPow = p; bestFreq = f; }
+  let bestDist = Number.POSITIVE_INFINITY;
+  for (const f of VIS_FREQS) {
+    const dist = Math.abs(mean - f);
+    if (dist < bestDist) { bestDist = dist; bestFreq = f; }
   }
-  return bestFreq;
+  return bestDist <= TOLERANCE ? bestFreq : 0;
 }
 
 // ── State machine ─────────────────────────────────────────────────────────────
 
 type State = 'IDLE' | 'LEADER' | 'BREAK' | 'START' | 'VIS_BITS' | 'STOP' | 'BUFFERING';
 
+// Max preamble: 5 s leader + break + start + 8 VIS bits + stop ≈ 5.3 s
+// Max frame: PD-120 ≈ 274 s. Total cap: ~280 s.
+const MAX_TOTAL_SECONDS = 5.5 + 280;
+
 export class SSTVVISDetector {
   private readonly sampleRate: number;
-
-  // Window size: 30 ms for VIS bits (standard), also used for break/start
-  private readonly winSize: number;
-
-  // Leader detection: we need ≥ 10 consecutive 1900 Hz windows (~300 ms)
-  private readonly leaderRequired = 10;
+  private readonly winSize: number;        // 10 ms = 240 samples
+  private readonly leaderRequired = 30;   // 30 × 10ms = 300 ms
 
   private state: State = 'IDLE';
   private leaderCount  = 0;
   private visBits: number[] = [];
-  private frameBuffer: Float32Array | null = null;
-  private frameSamplesRequired = 0;
-  private frameSamplesCollected = 0;
 
-  // Sliding window accumulator
-  private readonly windowBuf: Float32Array;
-  private windowFill = 0;
+  // 3-sub-window counter for 30ms segments (start bit, VIS bits, stop bit)
+  private subCount = 0;
+  private subTone  = 0;
+
+  // Single large pre-allocated output buffer. We write into it continuously
+  // from the start of the leader. On emit we slice out the filled portion.
+  private readonly outBuf: Float32Array;
+  private outIdx = 0;             // write cursor
+  private leaderStartIdx  = 0;   // outIdx when leader first detected
+  private preambleEndIdx  = 0;   // outIdx when BUFFERING starts
+  private frameSamplesNeeded = 0;
+
+  // 10ms sliding window accumulator
+  private readonly winBuf: Float32Array;
+  private winFill = 0;
 
   constructor(sampleRate = 24_000) {
     this.sampleRate = sampleRate;
-    this.winSize    = Math.round(0.030 * sampleRate);   // 30 ms window
-    this.windowBuf  = new Float32Array(this.winSize);
+    this.winSize    = Math.round(0.010 * sampleRate);
+    this.winBuf     = new Float32Array(this.winSize);
+    this.outBuf     = new Float32Array(Math.ceil(MAX_TOTAL_SECONDS * sampleRate));
   }
 
-  /**
-   * Push audio samples into the detector.
-   * Returns a complete Float32Array frame when one is detected, otherwise null.
-   */
   push(samples: Float32Array): Float32Array | null {
     for (let i = 0; i < samples.length; i++) {
+      const s = samples[i];
+
       if (this.state === 'BUFFERING') {
-        this.frameBuffer![this.frameSamplesCollected++] = samples[i];
-        if (this.frameSamplesCollected >= this.frameSamplesRequired) {
-          const out = this.frameBuffer!;
+        // Write image data directly after preamble
+        if (this.outIdx < this.outBuf.length) {
+          this.outBuf[this.outIdx++] = s;
+        }
+        if (this.outIdx - this.preambleEndIdx >= this.frameSamplesNeeded) {
+          const out = this.outBuf.slice(this.leaderStartIdx, this.outIdx);
           this.reset();
           return out;
         }
         continue;
       }
 
-      // Fill the sliding window
-      this.windowBuf[this.windowFill++] = samples[i];
-      if (this.windowFill < this.winSize) continue;
-      this.windowFill = 0;
+      // Always write into outBuf so we have the full history
+      if (this.outIdx < this.outBuf.length) {
+        this.outBuf[this.outIdx++] = s;
+      }
 
-      // We have a complete window — classify it
+      // Accumulate 10ms window
+      this.winBuf[this.winFill++] = s;
+      if (this.winFill < this.winSize) continue;
+      this.winFill = 0;
+
       this.processWindow();
     }
     return null;
   }
 
   private processWindow(): void {
-    const tone = dominantTone(this.windowBuf, this.sampleRate);
+    const tone = dominantTone(this.winBuf);
 
     switch (this.state) {
       case 'IDLE':
         if (tone === 1900) {
-          this.leaderCount = 1;
-          this.state = 'LEADER';
+          // Record where the leader starts in outBuf
+          this.leaderStartIdx = this.outIdx - this.winSize;
+          this.leaderCount    = 1;
+          this.state          = 'LEADER';
         }
         break;
 
@@ -140,36 +150,45 @@ export class SSTVVISDetector {
 
       case 'BREAK':
         if (tone === 1900) {
-          this.state = 'START';
+          this.subCount = 1;
+          this.subTone  = 1900;
+          this.state    = 'START';
         } else {
           this.reset();
         }
         break;
 
       case 'START':
-        // Start bit seen; now collect 8 VIS data bits
-        this.visBits = [];
-        this.state = 'VIS_BITS';
-        this.processVISBit(tone);
+        if (tone === this.subTone) {
+          this.subCount++;
+          if (this.subCount >= 3) {
+            this.visBits  = [];
+            this.subCount = 0;
+            this.subTone  = 0;
+            this.state    = 'VIS_BITS';
+          }
+        } else {
+          this.reset();
+        }
         break;
 
       case 'VIS_BITS':
-        this.processVISBit(tone);
+        this.processVISSubWindow(tone);
         break;
 
       case 'STOP':
         if (tone === 1200) {
-          // Stop bit confirmed — parse VIS code
-          const visCode = this.parseVISCode();
-          const duration = VIS_DURATIONS[visCode];
-          if (duration !== undefined) {
-            const needed = Math.ceil(duration * this.sampleRate);
-            this.frameBuffer = new Float32Array(needed);
-            this.frameSamplesRequired  = needed;
-            this.frameSamplesCollected = 0;
-            this.state = 'BUFFERING';
-          } else {
-            this.reset();
+          this.subCount++;
+          if (this.subCount >= 3) {
+            const visCode  = this.parseVISCode();
+            const duration = VIS_DURATIONS[visCode];
+            if (duration !== undefined) {
+              this.preambleEndIdx    = this.outIdx;
+              this.frameSamplesNeeded = Math.ceil(duration * this.sampleRate);
+              this.state = 'BUFFERING';
+            } else {
+              this.reset();
+            }
           }
         } else {
           this.reset();
@@ -177,33 +196,40 @@ export class SSTVVISDetector {
         break;
 
       case 'BUFFERING':
-        // handled in push() directly
         break;
     }
   }
 
-  private processVISBit(tone: number): void {
-    // VIS bits: 1100 Hz = '1', 1300 Hz = '0'
-    if (tone === 1100) {
-      this.visBits.push(1);
-    } else if (tone === 1300) {
-      this.visBits.push(0);
-    } else if (tone === 1200 && this.visBits.length === 8) {
-      // Got stop bit while expecting more — treat as early STOP
-      this.state = 'STOP';
-      this.processWindow();
-      return;
+  private processVISSubWindow(tone: number): void {
+    if (this.subCount === 0) {
+      if (tone === 1100 || tone === 1300) {
+        this.subTone  = tone;
+        this.subCount = 1;
+      } else if (tone === 1200 && this.visBits.length === 8) {
+        this.subTone  = 1200;
+        this.subCount = 1;
+        this.state    = 'STOP';
+      } else {
+        this.reset();
+      }
     } else {
-      this.reset();
-      return;
-    }
-
-    if (this.visBits.length === 8) {
-      this.state = 'STOP';
+      if (tone === this.subTone) {
+        this.subCount++;
+        if (this.subCount >= 3) {
+          this.visBits.push(this.subTone === 1100 ? 1 : 0);
+          this.subCount = 0;
+          this.subTone  = 0;
+          if (this.visBits.length === 8) {
+            this.state    = 'STOP';
+            this.subCount = 0;
+          }
+        }
+      } else {
+        this.reset();
+      }
     }
   }
 
-  /** Parse 7 data bits + 1 parity bit into VIS code (LSB first). */
   private parseVISCode(): number {
     let code = 0;
     for (let i = 0; i < 7; i++) {
@@ -213,12 +239,15 @@ export class SSTVVISDetector {
   }
 
   private reset(): void {
-    this.state        = 'IDLE';
-    this.leaderCount  = 0;
-    this.visBits      = [];
-    this.frameBuffer  = null;
-    this.frameSamplesRequired  = 0;
-    this.frameSamplesCollected = 0;
-    this.windowFill   = 0;
+    this.state              = 'IDLE';
+    this.leaderCount        = 0;
+    this.visBits            = [];
+    this.subCount           = 0;
+    this.subTone            = 0;
+    this.outIdx             = 0;
+    this.leaderStartIdx     = 0;
+    this.preambleEndIdx     = 0;
+    this.frameSamplesNeeded = 0;
+    this.winFill            = 0;
   }
 }
