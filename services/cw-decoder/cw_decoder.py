@@ -115,8 +115,8 @@ class CWSignalChain:
         self._zi1_im = np.zeros(len(_taps1) - 1)
         self._zi2_re = np.zeros(len(_taps2) - 1)
         self._zi2_im = np.zeros(len(_taps2) - 1)
-        # Envelope smoother: power-law smoothing, τ ≈ 3 ms (much shorter than a dit)
-        _tau_sec      = 0.003
+        # Envelope smoother: power-law smoothing, τ ≈ 1 ms (fast attack, tracks keying)
+        _tau_sec      = 0.001
         self._env_alpha = float(1 - np.exp(-1 / (_tau_sec * AUDIO_RATE)))
         self._env_state = 0.0
         # Rolling window for adaptive threshold (3 seconds of audio power)
@@ -268,22 +268,54 @@ MORSE_CODE: dict[str, str] = {
     '...-..-': '$', '.--.-.': '@',
 }
 
-DAH_THRESHOLD = 2.5
-CHAR_GAP_DITS = 2.5   # 3-dit gaps measure as ~2.95 dits due to envelope latency
-WORD_GAP_DITS = 5.5   # 7-dit gaps measure as ~6.0 dits; 1-dit intra-char ~1.0
+DAH_THRESHOLD = 2.0   # tones ≥ 2× dit → dah (real keying: dahs are 2.5–3.5× dit)
+CHAR_GAP_DITS = 2.0   # gaps ≥ 2× dit → char boundary (real: 1.5–3.5 measured)
+WORD_GAP_DITS = 4.5   # gaps ≥ 4.5× dit → word boundary (real: 5–8 measured)
 
 
 class MorseDecoder:
+    """Morse state machine with adaptive dit-length estimation.
+
+    Observes the actual durations of transmitted tones and continuously
+    updates its estimate of the dit length.  This makes the decoder
+    speed-independent (works at 10–40 WPM without reconfiguration) and
+    tolerant of operators whose timing drifts.
+
+    Estimation strategy:
+      - Every tone is classified as dit or dah using the *current* dit estimate.
+      - Dit durations are fed into an EWMA; dah durations are divided by 3
+        before being fed in (so both contribute to the same underlying dit estimate).
+      - The estimate is clamped to the range 5–200 WPM to prevent runaway.
+    """
+
+    # EWMA weight for the dit estimator: 0.15 → smoothing over ~6 tones
+    _DIT_ALPHA = 0.15
+
+    # Clamp dit estimate: 5 WPM → 480 ms/dit; 40 WPM → 30 ms/dit at 24 kHz
+    _DIT_MIN = int(AUDIO_RATE * 0.030)   # 40 WPM
+    _DIT_MAX = int(AUDIO_RATE * 0.480)   # 5 WPM
+
     def __init__(self) -> None:
         self._symbols: list[str] = []
+        self._dit_est = float(DIT_SAMPLES)   # start at configured 20 WPM
 
-    def push_tone(self, duration: int, dit: int) -> None:
+    @property
+    def dit(self) -> int:
+        return max(self._DIT_MIN, min(self._DIT_MAX, int(self._dit_est)))
+
+    def push_tone(self, duration: int, _dit_ignored: int) -> None:
+        dit = self.dit
         if duration < dit * 0.4:
-            return
-        self._symbols.append('.' if duration < dit * DAH_THRESHOLD else '-')
+            return   # too short — noise spike
+        is_dit = duration < dit * DAH_THRESHOLD
+        self._symbols.append('.' if is_dit else '-')
+        # Update dit estimate: dah counts as 3 dits
+        observed = duration if is_dit else duration / 3.0
+        self._dit_est += self._DIT_ALPHA * (observed - self._dit_est)
 
-    def push_gap(self, duration: int, dit: int) -> list[dict]:
+    def push_gap(self, duration: int, _dit_ignored: int) -> list[dict]:
         events: list[dict] = []
+        dit  = self.dit
         dits = duration / dit
         ts   = datetime.now(UTC).isoformat()
         if dits >= WORD_GAP_DITS:
@@ -299,6 +331,8 @@ class MorseDecoder:
         code  = ''.join(self._symbols)
         char  = MORSE_CODE.get(code, f'[{code}]')
         self._symbols = []
+        wpm = int(round(60 / (50 * (self._dit_est / AUDIO_RATE)))) if self._dit_est > 0 else 0
+        log.debug("Decoded %r from %r  dit_est=%.0f samp (%d WPM)", char, code, self._dit_est, wpm)
         return [{'type': 'char', 'char': char, 'freq': CW_FREQ_HZ, 'ts': ts}]
 
 # ── WebSocket broadcast hub ────────────────────────────────────────────────────

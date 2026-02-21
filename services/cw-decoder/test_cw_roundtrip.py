@@ -187,19 +187,31 @@ def events_to_text(events: list[dict]) -> str:
 # ---------------------------------------------------------------------------
 
 class TestMorseDecoder:
-    """Unit tests for the MorseDecoder state machine in isolation."""
+    """Unit tests for the MorseDecoder state machine in isolation.
+
+    MorseDecoder is now adaptive — it ignores the 'dit' parameter passed to
+    push_tone/push_gap and uses its internal self.dit estimate instead.
+    Tests pre-seed _dit_est so the adaptive estimator starts at the right scale.
+    """
+
+    @staticmethod
+    def make_md(dit: int) -> cwd.MorseDecoder:
+        """Create a MorseDecoder pre-seeded to the given dit length."""
+        md = cwd.MorseDecoder()
+        md._dit_est = float(dit)
+        return md
 
     def test_single_dit_is_E(self):
-        md = cwd.MorseDecoder()
-        dit = 72  # audio samples
+        dit = 720  # audio samples (20 WPM at 24 kHz = 1440, use 720 for 40 WPM)
+        md = self.make_md(dit)
         md.push_tone(dit, dit)
         events = md.push_gap(dit * 7, dit)  # word gap flushes
         chars = [e['char'] for e in events if e['type'] == 'char']
         assert 'E' in chars
 
     def test_dah_is_T(self):
-        md = cwd.MorseDecoder()
-        dit = 72
+        dit = 720
+        md = self.make_md(dit)
         md.push_tone(dit * 3, dit)  # dah
         events = md.push_gap(dit * 7, dit)
         chars = [e['char'] for e in events if e['type'] == 'char']
@@ -207,8 +219,8 @@ class TestMorseDecoder:
 
     def test_CQ(self):
         """Encode CQ: -.-. --.-"""
-        md = cwd.MorseDecoder()
-        dit = 72
+        dit = 720
+        md = self.make_md(dit)
 
         def tone(n): md.push_tone(n, dit)
         def gap(n): return md.push_gap(n, dit)
@@ -230,8 +242,8 @@ class TestMorseDecoder:
         assert 'Q' in chars
 
     def test_word_space_event(self):
-        md = cwd.MorseDecoder()
-        dit = 72
+        dit = 720
+        md = self.make_md(dit)
         # Send E then word gap
         md.push_tone(dit, dit)
         events = md.push_gap(dit * 7, dit)
@@ -240,8 +252,8 @@ class TestMorseDecoder:
 
     def test_short_noise_ignored(self):
         """Tones shorter than 40% of a dit are treated as noise."""
-        md = cwd.MorseDecoder()
-        dit = 72
+        dit = 720
+        md = self.make_md(dit)
         md.push_tone(int(dit * 0.3), dit)   # too short → ignored
         md.push_tone(dit, dit)               # dit → E
         events = md.push_gap(dit * 7, dit)
