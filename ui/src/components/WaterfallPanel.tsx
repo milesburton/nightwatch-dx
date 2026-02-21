@@ -90,8 +90,18 @@ export function WaterfallPanel() {
       const wfCanvas   = wfCanvasRef.current;
       if (!specCanvas || !wfCanvas) return;
 
-      const W = wfCanvas.width;
-      if (W === 0) return;
+      // If the container hasn't been measured yet, size the canvases now.
+      let W = wfCanvas.width;
+      if (W === 0) {
+        const containerW = wfCanvas.parentElement?.clientWidth ?? 0;
+        if (containerW === 0) return;
+        W = containerW;
+        specCanvas.width  = containerW;
+        specCanvas.height = SPECTRUM_HEIGHT;
+        wfCanvas.width    = containerW;
+        wfCanvas.height   = WATERFALL_ROWS;
+        wfDataRef.current = null;
+      }
 
       // ── Spectrum (instantaneous) ──────────────────────────────────────────
       if (specCanvas.height !== SPECTRUM_HEIGHT) specCanvas.height = SPECTRUM_HEIGHT;

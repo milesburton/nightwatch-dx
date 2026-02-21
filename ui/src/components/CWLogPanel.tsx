@@ -6,12 +6,14 @@
  *
  * Sessions are persisted in IndexedDB (sdr-monitor / cw-sessions).
  * A 30-second inactivity timer marks the end of each session.
+ *
+ * Data source: WebSocket to /ws/cw (cw-decoder Python service).
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { addIQListener } from '../workers/iqWorkerSingleton.js';
 import { listCWSessions, saveCWSession } from '../utils/db.js';
 import type { CWSession } from '../utils/db.js';
+import type { CWSocketMessage } from '../types.js';
 
 const SESSION_TIMEOUT_MS = 30_000;
 
@@ -51,7 +53,6 @@ export function CWLogPanel() {
   // ── Load persisted sessions on mount ───────────────────────────────────────
   useEffect(() => {
     listCWSessions().then((rows) => {
-      // Newest first
       setSessions(rows.sort((a, b) => b.startTs.localeCompare(a.startTs)));
     });
   }, []);
@@ -66,10 +67,9 @@ export function CWLogPanel() {
       text,
       freqHz:  liveFreqRef.current,
     };
-    // Save and prepend to list
     saveCWSession(session).then(() => {
       setSessions((prev) => {
-        const withId = { ...session, id: Date.now() };   // temp id until reload
+        const withId = { ...session, id: Date.now() };
         return [withId, ...prev];
       });
     });
@@ -87,31 +87,55 @@ export function CWLogPanel() {
     }, SESSION_TIMEOUT_MS);
   }, [flushSession]);
 
-  // ── IQ worker listener ──────────────────────────────────────────────────────
+  // ── WebSocket to /ws/cw ─────────────────────────────────────────────────────
   useEffect(() => {
-    const unsub = addIQListener((msg) => {
-      if (msg.type === 'status') {
-        setConnected(msg.connected);
-        liveFreqRef.current = msg.centerFreq;
-        setLiveFreq(msg.centerFreq);
-      } else if (msg.type === 'cw_char') {
-        liveFreqRef.current = msg.freq;
-        setLiveFreq(msg.freq);
-        if (!liveStartRef.current) {
-          liveStartRef.current = msg.ts;
-          setLiveStartTs(msg.ts);
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    let ws: WebSocket | null = null;
+    let closed = false;
+
+    function connect() {
+      if (closed) return;
+      ws = new WebSocket(`${proto}//${location.host}/ws/cw`);
+      ws.onopen = () => {};
+      ws.onclose = () => {
+        setConnected(false);
+        if (!closed) setTimeout(connect, 3000);
+      };
+      ws.onerror = () => ws?.close();
+      ws.onmessage = (e: MessageEvent<string>) => {
+        let msg: CWSocketMessage;
+        try { msg = JSON.parse(e.data) as CWSocketMessage; }
+        catch { return; }
+
+        if (msg.type === 'status') {
+          setConnected(msg.connected);
+          if ('freq' in msg) {
+            liveFreqRef.current = msg.freq;
+            setLiveFreq(msg.freq);
+          }
+        } else if (msg.type === 'char') {
+          liveFreqRef.current = msg.freq;
+          setLiveFreq(msg.freq);
+          if (!liveStartRef.current) {
+            liveStartRef.current = msg.ts;
+            setLiveStartTs(msg.ts);
+          }
+          liveTextRef.current += msg.char;
+          setLiveText(liveTextRef.current);
+          resetTimer();
+        } else if (msg.type === 'word_space') {
+          liveTextRef.current += ' ';
+          setLiveText(liveTextRef.current);
+          resetTimer();
         }
-        liveTextRef.current += msg.char;
-        setLiveText(liveTextRef.current);
-        resetTimer();
-      } else if (msg.type === 'cw_word_space') {
-        liveTextRef.current += ' ';
-        setLiveText(liveTextRef.current);
-        resetTimer();
-      }
-    });
+      };
+    }
+
+    connect();
+
     return () => {
-      unsub();
+      closed = true;
+      ws?.close();
       if (timerRef.current) clearTimeout(timerRef.current);
     };
   }, [resetTimer]);
@@ -142,7 +166,7 @@ export function CWLogPanel() {
             />
             {connected
               ? `${formatFreq(liveFreq)} · ${sessions.length} sessions`
-              : 'Connecting to IQ stream…'}
+              : 'Connecting to CW decoder…'}
           </p>
         </div>
       </div>

@@ -78,12 +78,9 @@ export interface DecodeImageResult {
 
 /** Messages sent FROM the IQ worker TO the main thread */
 export type IQWorkerMessage =
-  | { type: 'cw_char';       char: string; freq: number; ts: string }
-  | { type: 'cw_word_space' }
-  | { type: 'fft';           bins: number[]; centerFreq: number; sampleRate: number }
-  | { type: 'status';        connected: boolean; centerFreq: number; sampleRate: number }
-  | { type: 'sstv_audio';   samples: Float32Array; sampleRate: number; ts: string }
-  | { type: 'error';         message: string };
+  | { type: 'fft';    bins: number[]; centerFreq: number; sampleRate: number }
+  | { type: 'status'; connected: boolean; centerFreq: number; sampleRate: number }
+  | { type: 'error';  message: string };
 
 // ── CW types (kept for compatibility) ────────────────────────────────────────
 

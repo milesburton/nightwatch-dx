@@ -19,6 +19,34 @@ services:
       MUX_PORT: "1235"
       WS_PORT: "1236"
 
+  # ── CW decoder ────────────────────────────────────────────────────────────
+  cw-decoder:
+    build:
+      context: .
+      dockerfile: docker/cw-decoder/Dockerfile
+    container_name: sdr-cw-decoder
+    restart: unless-stopped
+    depends_on:
+      - rtl-bridge
+    environment:
+      MUX_HOST: "rtl-bridge"
+      MUX_PORT: "1235"
+      WS_PORT: "8765"
+
+  # ── SSTV decoder ──────────────────────────────────────────────────────────
+  sstv-decoder:
+    build:
+      context: .
+      dockerfile: docker/sstv-decoder/Dockerfile
+    container_name: sdr-sstv-decoder
+    restart: unless-stopped
+    depends_on:
+      - rtl-bridge
+    environment:
+      MUX_HOST: "rtl-bridge"
+      MUX_PORT: "1235"
+      WS_PORT: "8766"
+
   # ── Web UI ────────────────────────────────────────────────────────────────
   ui:
     build:
@@ -28,5 +56,7 @@ services:
     restart: unless-stopped
     depends_on:
       - rtl-bridge
+      - cw-decoder
+      - sstv-decoder
     ports:
       - "8080:80"

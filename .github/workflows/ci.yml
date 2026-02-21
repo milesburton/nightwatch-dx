@@ -82,6 +82,12 @@ jobs:
     - name: Build rtl-bridge
       run: docker compose build rtl-bridge
 
+    - name: Build cw-decoder
+      run: docker compose build cw-decoder
+
+    - name: Build sstv-decoder
+      run: docker compose build sstv-decoder
+
     - name: Build ui
       run: docker compose build ui
 

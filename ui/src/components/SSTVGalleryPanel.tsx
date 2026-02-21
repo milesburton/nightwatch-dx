@@ -1,55 +1,24 @@
 /**
- * SSTVGalleryPanel — automatically detects and decodes SSTV transmissions
- * from the live IQ stream.
+ * SSTVGalleryPanel — automatically detects and decodes SSTV transmissions.
  *
- * The IQ worker runs an FM discriminator + SSTVVISDetector on 14.230 MHz.
- * When it accumulates a full frame it posts an `sstv_audio` message with the
- * raw demodulated Float32Array. This panel receives that, dispatches it to
- * the existing decoderWorker (same one SSTVPanel used), renders the result
- * to a canvas, and persists it in IndexedDB.
+ * Receives pre-decoded PNG frames from the sstv-decoder Python backend via
+ * WebSocket at /ws/sstv. Persists frames in IndexedDB (max 100).
  *
- * Gallery: newest first, 3-column grid, max 100 frames (purged in db.ts).
+ * Gallery: newest first, 3-column grid.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { WorkerDecodeRequest, WorkerOutboundMessage } from '../types.js';
-import { listSSTV, saveSSTV } from '../utils/db.js';
+import { useEffect, useState } from 'react';
 import type { SSTVFrame } from '../utils/db.js';
-import { addIQListener } from '../workers/iqWorkerSingleton.js';
+import { listSSTV, saveSSTV } from '../utils/db.js';
 
-function pixelsToDataUrl(pixels: Uint8ClampedArray, width: number, height: number): string {
-  const canvas = document.createElement('canvas');
-  canvas.width  = width;
-  canvas.height = height;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return '';
-  const imageData = ctx.createImageData(width, height);
-  imageData.data.set(pixels);
-  ctx.putImageData(imageData, 0, 0);
-  return canvas.toDataURL('image/png');
-}
-
-function decodeWithWorker(samples: Float32Array, sampleRate: number): Promise<WorkerOutboundMessage> {
-  return new Promise((resolve) => {
-    const worker = new Worker(new URL('../workers/decoderWorker.ts', import.meta.url), { type: 'module' });
-    worker.onmessage = (e: MessageEvent<WorkerOutboundMessage>) => {
-      worker.terminate();
-      resolve(e.data);
-    };
-    worker.onerror = (e: ErrorEvent) => {
-      worker.terminate();
-      resolve({ type: 'error', message: e.message ?? 'Worker error' });
-    };
-    const req: WorkerDecodeRequest = { type: 'decode', samples, sampleRate };
-    worker.postMessage(req, [samples.buffer]);
-  });
-}
+type SSTVBackendMessage =
+  | { type: 'frame'; imageDataUrl: string; mode: string; ts: string }
+  | { type: 'status'; connected: boolean }
+  | { type: 'error'; message: string };
 
 export function SSTVGalleryPanel() {
   const [frames, setFrames]       = useState<SSTVFrame[]>([]);
   const [connected, setConnected] = useState(false);
-  const [decoding, setDecoding]   = useState(false);
-  const frameIdRef = useRef(0);
 
   // Load persisted frames on mount (newest first)
   useEffect(() => {
@@ -58,38 +27,49 @@ export function SSTVGalleryPanel() {
     });
   }, []);
 
-  // Handle incoming decoded SSTV audio frames
-  const handleSSTVAudio = useCallback(async (samples: Float32Array, sampleRate: number, ts: string) => {
-    setDecoding(true);
-    try {
-      const result = await decodeWithWorker(samples, sampleRate);
-      if (result.type === 'error') return;
-      const imageUrl = pixelsToDataUrl(result.pixels, result.width, result.height);
-      if (!imageUrl) return;
-      const frame: SSTVFrame = {
-        id: frameIdRef.current++,
-        ts,
-        imageUrl,
-        mode: result.diagnostics.mode,
-      };
-      await saveSSTV(frame);
-      setFrames((prev) => [frame, ...prev]);
-    } finally {
-      setDecoding(false);
-    }
-  }, []);
-
-  // Subscribe to IQ worker messages
+  // WebSocket to /ws/sstv
   useEffect(() => {
-    const unsub = addIQListener((msg) => {
-      if (msg.type === 'status') {
-        setConnected(msg.connected);
-      } else if (msg.type === 'sstv_audio') {
-        void handleSSTVAudio(msg.samples, msg.sampleRate, msg.ts);
-      }
-    });
-    return unsub;
-  }, [handleSSTVAudio]);
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    let ws: WebSocket | null = null;
+    let closed = false;
+    let frameCounter = Date.now();
+
+    function connect() {
+      if (closed) return;
+      ws = new WebSocket(`${proto}//${location.host}/ws/sstv`);
+      ws.onopen = () => {};
+      ws.onclose = () => {
+        setConnected(false);
+        if (!closed) setTimeout(connect, 3000);
+      };
+      ws.onerror = () => ws?.close();
+      ws.onmessage = (e: MessageEvent<string>) => {
+        let msg: SSTVBackendMessage;
+        try { msg = JSON.parse(e.data) as SSTVBackendMessage; }
+        catch { return; }
+
+        if (msg.type === 'status') {
+          setConnected(msg.connected);
+        } else if (msg.type === 'frame') {
+          const frame: SSTVFrame = {
+            id:       frameCounter++,
+            ts:       msg.ts,
+            imageUrl: msg.imageDataUrl,
+            mode:     msg.mode,
+          };
+          void saveSSTV(frame);
+          setFrames((prev) => [frame, ...prev]);
+        }
+      };
+    }
+
+    connect();
+
+    return () => {
+      closed = true;
+      ws?.close();
+    };
+  }, []);
 
   return (
     <div className="glass rounded-2xl p-6 flex flex-col gap-4">
@@ -103,9 +83,6 @@ export function SSTVGalleryPanel() {
           title={connected ? 'Connected' : 'Connecting…'}
         />
         <span className="text-white/40 text-xs font-mono">14.230 MHz</span>
-        {decoding && (
-          <span className="text-amber-400 text-xs animate-pulse ml-2">Decoding…</span>
-        )}
       </div>
 
       {/* Gallery */}
@@ -113,7 +90,7 @@ export function SSTVGalleryPanel() {
         <p className="text-white/20 text-xs italic text-center py-8">
           {connected
             ? 'Listening for SSTV on 14.230 MHz…'
-            : 'Connecting to IQ stream…'}
+            : 'Connecting to SSTV decoder…'}
         </p>
       ) : (
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
