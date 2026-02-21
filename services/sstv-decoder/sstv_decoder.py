@@ -58,7 +58,8 @@ def kaiser_lowpass(cutoff: float, sample_rate: float, duration: float = 0.001, b
     norm_cut = 2.0 * cutoff / sample_rate
     n        = np.arange(num_taps)
     x        = n - center
-    sinc     = np.where(x == 0, norm_cut, np.sin(np.pi * x * norm_cut) / (np.pi * x))
+    with np.errstate(invalid='ignore', divide='ignore'):
+        sinc = np.where(x == 0, norm_cut, np.sin(np.pi * x * norm_cut) / (np.pi * x))
     window   = np.kaiser(num_taps, beta)
     taps     = sinc * window
     taps    /= taps.sum()
