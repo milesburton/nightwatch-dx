@@ -1,38 +1,19 @@
-/**
- * IQ Worker — runs in a Web Worker, connects to rtl-bridge WebSocket,
- * and does all signal processing in the background thread:
- *
- *   - CW decode:      CWDecoder.ts (mix → decimate → envelope → Morse)
- *   - Waterfall FFT:  1024-pt Hann-windowed, 50-frame averaged
- *   - SSTV detect:    FM discriminator → SSTVVISDetector → sstv_audio message
- *
- * Posts IQWorkerMessage to the main thread for UI updates.
- *
- * SDR parameters are hard-coded to match the rtl-bridge Dockerfile.
- */
-
 import type { IQWorkerMessage } from '../types.js';
-import { Complex } from '../utils/Complex.js';
 import { CWDecoder } from '../utils/CWDecoder.js';
-import { KaiserFIR } from '../utils/KaiserFIR.js';
-import { Phasor } from '../utils/Phasor.js';
 import { SSTVVISDetector } from '../utils/SSTVVISDetector.js';
 
-// ── Configuration ─────────────────────────────────────────────────────────────
-
 const SDR_SAMPLE_RATE = 2_400_000;
-const SDR_CENTER_HZ = 139_175_000; // 14.175 MHz RF after 125 MHz upconverter
+const SDR_CENTER_HZ = 139_175_000;
 const LO_OFFSET_HZ = 125_000_000;
 const CW_FREQ_HZ = 14_029_000;
 const WPM = 20;
 
-const RF_CENTER_HZ = SDR_CENTER_HZ - LO_OFFSET_HZ; // 14.175 MHz
-const AUDIO_SAMPLE_RATE = SDR_SAMPLE_RATE / 100; // 24 000 Hz
+const RF_CENTER_HZ = SDR_CENTER_HZ - LO_OFFSET_HZ;
+const AUDIO_SAMPLE_RATE = SDR_SAMPLE_RATE / 100;
 
-// SSTV is on 14.230 MHz → offset from RF centre 14.175 MHz = +55 kHz
-const SSTV_OFFSET_HZ = 14_230_000 - RF_CENTER_HZ; // 55 000
+const SSTV_OFFSET_HZ = 14_230_000 - RF_CENTER_HZ;
 
-// ── Waterfall FFT state ──────────────────────────────────────────────────────
+// ── Waterfall FFT ─────────────────────────────────────────────────────────────
 
 const FFT_SIZE = 1024;
 const FFT_AVERAGES = 50;
@@ -45,7 +26,7 @@ for (let i = 0; i < FFT_SIZE; i++) {
 const fftAccum = new Float32Array(FFT_SIZE).fill(0);
 let fftFrameCount = 0;
 
-const iqBuf = new Float32Array(FFT_SIZE * 2).fill(0); // [I0, Q0, I1, Q1, …]
+const iqBuf = new Float32Array(FFT_SIZE * 2).fill(0);
 let iqBufIdx = 0;
 let iqBufFilled = 0;
 
@@ -66,8 +47,7 @@ function fftPower(re: Float32Array, im: Float32Array): Float32Array {
     const wRe = Math.cos(ang);
     const wIm = Math.sin(ang);
     for (let i = 0; i < n; i += len) {
-      let curRe = 1,
-        curIm = 0;
+      let curRe = 1, curIm = 0;
       for (let k = 0; k < len / 2; k++) {
         const uRe = re[i + k];
         const uIm = im[i + k];
@@ -98,7 +78,7 @@ function fftPower(re: Float32Array, im: Float32Array): Float32Array {
 function processFFT(raw: Uint8Array): void {
   const n = raw.length & ~1;
   for (let i = 0; i < n; i += 2) {
-    iqBuf[iqBufIdx * 2] = (raw[i] - 127.5) / 127.5;
+    iqBuf[iqBufIdx * 2]     = (raw[i]     - 127.5) / 127.5;
     iqBuf[iqBufIdx * 2 + 1] = (raw[i + 1] - 127.5) / 127.5;
     iqBufIdx = (iqBufIdx + 1) % FFT_SIZE;
     if (iqBufFilled < FFT_SIZE) iqBufFilled++;
@@ -110,7 +90,7 @@ function processFFT(raw: Uint8Array): void {
   const im = new Float32Array(FFT_SIZE);
   for (let i = 0; i < FFT_SIZE; i++) {
     const idx = (iqBufIdx + i) % FFT_SIZE;
-    re[i] = iqBuf[idx * 2] * hannWindow[i];
+    re[i] = iqBuf[idx * 2]     * hannWindow[i];
     im[i] = iqBuf[idx * 2 + 1] * hannWindow[i];
   }
 
@@ -122,13 +102,7 @@ function processFFT(raw: Uint8Array): void {
     const bins = Array.from(fftAccum, (v) => v / FFT_AVERAGES);
     fftFrameCount = 0;
     fftAccum.fill(0);
-    const msg: IQWorkerMessage = {
-      type: 'fft',
-      bins,
-      centerFreq: RF_CENTER_HZ,
-      sampleRate: SDR_SAMPLE_RATE,
-    };
-    self.postMessage(msg);
+    self.postMessage({ type: 'fft', bins, centerFreq: RF_CENTER_HZ, sampleRate: SDR_SAMPLE_RATE } as IQWorkerMessage);
   }
 }
 
@@ -136,75 +110,134 @@ function processFFT(raw: Uint8Array): void {
 
 const cwDecoder = new CWDecoder({
   sdrSampleRate: SDR_SAMPLE_RATE,
-  sdrCenterHz: SDR_CENTER_HZ,
-  loOffsetHz: LO_OFFSET_HZ,
-  cwFreqHz: CW_FREQ_HZ,
-  wpm: WPM,
+  sdrCenterHz:   SDR_CENTER_HZ,
+  loOffsetHz:    LO_OFFSET_HZ,
+  cwFreqHz:      CW_FREQ_HZ,
+  wpm:           WPM,
 });
 
-// ── SSTV signal chain ─────────────────────────────────────────────────────────
-// Mix to 14.230 MHz (+55 kHz from RF centre), decimate 100× in two 10× FIR
-// stages, then FM-discriminate to recover audio, feed to VIS detector.
+// ── SSTV signal chain — allocation-free hot path ──────────────────────────────
+//
+// KaiserFIR.push() allocates a Complex object on every call (2.4 M/s), which
+// causes GC pressure that stalls the entire worker and freezes the waterfall.
+// Instead we inline the FIR convolution directly with Float32Arrays so no heap
+// objects are allocated in the per-sample loop.
 
-// KaiserFIR constructor: (cutoffFreq, sampleRate, duration, beta)
-// Cutoff = 0.5 × new Nyquist after decimation = SDR_SAMPLE_RATE/10/2 = 120 000 Hz
-const SSTV_FIR_CUTOFF = SDR_SAMPLE_RATE / 10 / 2; // 120 000 Hz
-const sstvMixer = new Phasor(SSTV_OFFSET_HZ, SDR_SAMPLE_RATE);
-const sstvFir1 = new KaiserFIR(SSTV_FIR_CUTOFF, SDR_SAMPLE_RATE, 0.001);
-const sstvFir2 = new KaiserFIR(SSTV_FIR_CUTOFF, SDR_SAMPLE_RATE / 10, 0.001);
+function makeKaiserTaps(cutoffFreq: number, sampleRate: number, duration: number, beta = 8): Float32Array {
+  const numTaps = Math.floor(duration * sampleRate) | 1;
+  const taps = new Float32Array(numTaps);
+  const normalizedCutoff = (2 * cutoffFreq) / sampleRate;
+  const center = (numTaps - 1) / 2;
 
-const visDetector = new SSTVVISDetector(AUDIO_SAMPLE_RATE);
+  function besselI0(x: number): number {
+    let sum = 1, term = 1;
+    for (let k = 1; k < 50; k++) {
+      term *= (x / (2 * k)) * (x / (2 * k));
+      sum += term;
+      if (term < 1e-12 * sum) break;
+    }
+    return sum;
+  }
 
-let sstvPrevI = 0;
-let sstvPrevQ = 0;
+  const ibeta = besselI0(beta);
+  for (let i = 0; i < numTaps; i++) {
+    const x = i - center;
+    const sinc = x === 0 ? normalizedCutoff : Math.sin(Math.PI * x * normalizedCutoff) / (Math.PI * x);
+    const alpha = (numTaps - 1) / 2;
+    const kaiserArg = beta * Math.sqrt(1 - ((i - alpha) / alpha) ** 2);
+    taps[i] = sinc * (besselI0(kaiserArg) / ibeta);
+  }
+
+  let sum = 0;
+  for (let i = 0; i < numTaps; i++) sum += taps[i];
+  for (let i = 0; i < numTaps; i++) taps[i] /= sum;
+
+  return taps;
+}
+
+const SSTV_FIR_DURATION = 0.001;
+const SSTV_FIR_CUTOFF1 = SDR_SAMPLE_RATE / 10 / 2;
+const SSTV_FIR_CUTOFF2 = SDR_SAMPLE_RATE / 100 / 2;
+
+const sstvTaps1 = makeKaiserTaps(SSTV_FIR_CUTOFF1, SDR_SAMPLE_RATE,       SSTV_FIR_DURATION);
+const sstvTaps2 = makeKaiserTaps(SSTV_FIR_CUTOFF2, SDR_SAMPLE_RATE / 10,  SSTV_FIR_DURATION);
+
+const N1 = sstvTaps1.length;
+const N2 = sstvTaps2.length;
+
+const sstvBuf1Re = new Float32Array(N1);
+const sstvBuf1Im = new Float32Array(N1);
+const sstvBuf2Re = new Float32Array(N2);
+const sstvBuf2Im = new Float32Array(N2);
+let sstvBuf1Idx = 0;
+let sstvBuf2Idx = 0;
+
+let sstvLOPhase = 0;
+const sstvLOStep = (2 * Math.PI * SSTV_OFFSET_HZ) / SDR_SAMPLE_RATE;
+
 let sstvDecCount1 = 0;
 let sstvDecCount2 = 0;
+let sstvPrevI = 0;
+let sstvPrevQ = 0;
 
-// Accumulate audio samples in 10 ms chunks before pushing to VIS detector
-const SSTV_AUDIO_CHUNK = Math.round(AUDIO_SAMPLE_RATE * 0.01); // 240 samples
+const SSTV_AUDIO_CHUNK = Math.round(AUDIO_SAMPLE_RATE * 0.01);
 const sstvAudioBuf = new Float32Array(SSTV_AUDIO_CHUNK);
 let sstvAudioIdx = 0;
 
-function processSSTVSample(rawI: number, rawQ: number): void {
-  // 1. Frequency mix to SSTV channel
-  const lo = sstvMixer.rotate();
-  const mixedI = rawI * lo.real - rawQ * lo.imag;
-  const mixedQ = rawI * lo.imag + rawQ * lo.real;
+const visDetector = new SSTVVISDetector(AUDIO_SAMPLE_RATE);
 
-  // 2. First 10× FIR decimation — push every sample, take output every 10
-  const fir1Out = sstvFir1.push(new Complex(mixedI, mixedQ));
-  sstvDecCount1++;
-  if (sstvDecCount1 < 10) return;
+function processSSTVSample(rawI: number, rawQ: number): void {
+  const loRe = Math.cos(sstvLOPhase);
+  const loIm = -Math.sin(sstvLOPhase);
+  sstvLOPhase += sstvLOStep;
+  if (sstvLOPhase > Math.PI) sstvLOPhase -= 2 * Math.PI;
+
+  const mixI = rawI * loRe - rawQ * loIm;
+  const mixQ = rawI * loIm + rawQ * loRe;
+
+  sstvBuf1Re[sstvBuf1Idx] = mixI;
+  sstvBuf1Im[sstvBuf1Idx] = mixQ;
+  sstvBuf1Idx = (sstvBuf1Idx + 1) % N1;
+
+  if (++sstvDecCount1 < 10) return;
   sstvDecCount1 = 0;
 
-  // 3. Second 10× FIR decimation
-  const fir2Out = sstvFir2.push(fir1Out);
-  sstvDecCount2++;
-  if (sstvDecCount2 < 10) return;
+  let outRe = 0, outIm = 0;
+  for (let k = 0; k < N1; k++) {
+    const idx = (sstvBuf1Idx + k) % N1;
+    outRe += sstvBuf1Re[idx] * sstvTaps1[k];
+    outIm += sstvBuf1Im[idx] * sstvTaps1[k];
+  }
+
+  sstvBuf2Re[sstvBuf2Idx] = outRe;
+  sstvBuf2Im[sstvBuf2Idx] = outIm;
+  sstvBuf2Idx = (sstvBuf2Idx + 1) % N2;
+
+  if (++sstvDecCount2 < 10) return;
   sstvDecCount2 = 0;
 
-  // 4. FM discriminator: instantaneous frequency via cross-product
-  const I = fir2Out.real;
-  const Q = fir2Out.imag;
-  const cross = Q * sstvPrevI - I * sstvPrevQ;
-  const dot = I * sstvPrevI + Q * sstvPrevQ;
-  const instFreq = (Math.atan2(cross, dot) * AUDIO_SAMPLE_RATE) / (2 * Math.PI);
-  sstvPrevI = I;
-  sstvPrevQ = Q;
+  let audioRe = 0, audioIm = 0;
+  for (let k = 0; k < N2; k++) {
+    const idx = (sstvBuf2Idx + k) % N2;
+    audioRe += sstvBuf2Re[idx] * sstvTaps2[k];
+    audioIm += sstvBuf2Im[idx] * sstvTaps2[k];
+  }
 
-  // 5. Accumulate then push to VIS detector
+  const cross = audioIm * sstvPrevI - audioRe * sstvPrevQ;
+  const dot   = audioRe * sstvPrevI + audioIm * sstvPrevQ;
+  sstvPrevI = audioRe;
+  sstvPrevQ = audioIm;
+  const instFreq = (Math.atan2(cross, dot) * AUDIO_SAMPLE_RATE) / (2 * Math.PI);
+
   sstvAudioBuf[sstvAudioIdx++] = instFreq;
   if (sstvAudioIdx >= SSTV_AUDIO_CHUNK) {
     sstvAudioIdx = 0;
     const frame = visDetector.push(sstvAudioBuf);
     if (frame) {
-      const msg: IQWorkerMessage = {
-        type: 'sstv_audio',
-        samples: frame,
-        sampleRate: AUDIO_SAMPLE_RATE,
-        ts: new Date().toISOString(),
-      };
-      self.postMessage(msg, { transfer: [frame.buffer] });
+      self.postMessage(
+        { type: 'sstv_audio', samples: frame, sampleRate: AUDIO_SAMPLE_RATE, ts: new Date().toISOString() } as IQWorkerMessage,
+        { transfer: [frame.buffer] },
+      );
     }
   }
 }
@@ -212,7 +245,7 @@ function processSSTVSample(rawI: number, rawQ: number): void {
 // ── WebSocket connection ───────────────────────────────────────────────────────
 
 const WS_PROTO = self.location.protocol === 'https:' ? 'wss:' : 'ws:';
-const WS_URL = `${WS_PROTO}//${self.location.host}/ws/iq`;
+const WS_URL   = `${WS_PROTO}//${self.location.host}/ws/iq`;
 
 let ws: WebSocket | null = null;
 
@@ -221,23 +254,11 @@ function connect(): void {
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
-    const msg: IQWorkerMessage = {
-      type: 'status',
-      connected: true,
-      centerFreq: RF_CENTER_HZ,
-      sampleRate: SDR_SAMPLE_RATE,
-    };
-    self.postMessage(msg);
+    self.postMessage({ type: 'status', connected: true,  centerFreq: RF_CENTER_HZ, sampleRate: SDR_SAMPLE_RATE } as IQWorkerMessage);
   };
 
   ws.onclose = () => {
-    const msg: IQWorkerMessage = {
-      type: 'status',
-      connected: false,
-      centerFreq: RF_CENTER_HZ,
-      sampleRate: SDR_SAMPLE_RATE,
-    };
-    self.postMessage(msg);
+    self.postMessage({ type: 'status', connected: false, centerFreq: RF_CENTER_HZ, sampleRate: SDR_SAMPLE_RATE } as IQWorkerMessage);
     setTimeout(connect, 3000);
   };
 
@@ -247,35 +268,21 @@ function connect(): void {
     if (!(e.data instanceof ArrayBuffer)) return;
     const raw = new Uint8Array(e.data);
 
-    // Skip 12-byte RTL0 magic header
-    const data = raw.length === 12 && raw[0] === 82 && raw[1] === 84 && raw[2] === 76 ? null : raw;
-    if (!data) return;
+    if (raw.length === 12 && raw[0] === 82 && raw[1] === 84 && raw[2] === 76) return;
 
-    // CW decode
-    cwDecoder.pushBytes(data, (ev) => {
+    cwDecoder.pushBytes(raw, (ev) => {
       if (ev.type === 'char') {
-        const msg: IQWorkerMessage = {
-          type: 'cw_char',
-          char: ev.char,
-          freq: ev.freq,
-          ts: new Date().toISOString(),
-        };
-        self.postMessage(msg);
+        self.postMessage({ type: 'cw_char', char: ev.char, freq: ev.freq, ts: new Date().toISOString() } as IQWorkerMessage);
       } else {
-        const msg: IQWorkerMessage = { type: 'cw_word_space' };
-        self.postMessage(msg);
+        self.postMessage({ type: 'cw_word_space' } as IQWorkerMessage);
       }
     });
 
-    // Waterfall FFT
-    processFFT(data);
+    processFFT(raw);
 
-    // SSTV signal chain (sample-by-sample at SDR rate)
-    const n = data.length & ~1;
+    const n = raw.length & ~1;
     for (let i = 0; i < n; i += 2) {
-      const rawI = (data[i] - 127.5) / 127.5;
-      const rawQ = (data[i + 1] - 127.5) / 127.5;
-      processSSTVSample(rawI, rawQ);
+      processSSTVSample((raw[i] - 127.5) / 127.5, (raw[i + 1] - 127.5) / 127.5);
     }
   };
 }
