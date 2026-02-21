@@ -67,12 +67,20 @@ class Multiplexer:
         log.info("WS client disconnected (total: %d)", len(self._ws_clients))
 
     def broadcast(self, data: bytes) -> None:
-        # TCP clients
+        # TCP clients — non-blocking send: drop the chunk rather than stalling
+        # the upstream reader thread.  A stalled upstream reader causes rtl_tcp
+        # to overflow its USB ring buffer (the "ll+" messages), corrupting all
+        # downstream data.  Decoders that fall behind simply miss some chunks;
+        # they still see a continuous, real-time IQ stream when they catch up.
         with self._lock:
             dead = []
             for sock in self._clients:
                 try:
+                    sock.setblocking(False)
                     sock.sendall(data)
+                    sock.setblocking(True)
+                except BlockingIOError:
+                    pass  # client is slow: drop this chunk, keep connection
                 except (OSError, BrokenPipeError):
                     dead.append(sock)
             for sock in dead:
