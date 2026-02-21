@@ -57,6 +57,10 @@ jobs:
       working-directory: ui
       run: npx tsc --noEmit
 
+    - name: Unit tests
+      working-directory: ui
+      run: npx vitest run --config vitest.config.ts
+
     - name: Build
       working-directory: ui
       run: npm run build
