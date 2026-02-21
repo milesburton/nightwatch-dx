@@ -153,7 +153,12 @@ export function WaterfallPanel() {
       }
       const wfData = wfDataRef.current;
 
-      wfData.data.copyWithin(W * 4, 0, W * (WATERFALL_ROWS - 1) * 4);
+      // Scroll waterfall down one row (copy rows 0‥ROWS-2 → rows 1‥ROWS-1).
+      // Must iterate in reverse to avoid overwriting source before it's copied.
+      const rowBytes = W * 4;
+      for (let row = WATERFALL_ROWS - 1; row > 0; row--) {
+        wfData.data.copyWithin(row * rowBytes, (row - 1) * rowBytes, row * rowBytes);
+      }
 
       const N = bins.length;
       for (let x = 0; x < W; x++) {
