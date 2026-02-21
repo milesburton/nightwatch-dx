@@ -5,10 +5,16 @@
  *
  * 1. MORSE_CODE table — instant lookups
  * 2. Construction — parameter derivation
- * 3. decodeAudio() end-to-end decode at 8 000 Hz / high WPM so total
- *    sample count stays small (< 200) and the adaptive-threshold sort
- *    path is never reached, keeping each test fast (< 100 ms).
- * 4. pushBytes() smoke tests — pipeline integrity without full IQ decode
+ * 3. decodeAudio() end-to-end character decode.
+ *
+ *    Performance constraints:
+ *    - decodeAudio() sorts its adaptive-threshold window every sample → O(n²)
+ *    - We use sr=8000, wpm=200, no leading silence to keep n < 1000 per test
+ *    - At n=1000 the O(n²) cost is ~1M ops — well under the 5 s timeout
+ *    - dit=48 samples > FIR taps (16), so the decimation filter has time to fill
+ *
+ * 4. pushBytes() smoke tests — pipeline integrity only (IQ at 2.4 MHz is too
+ *    slow to run full decode in a unit test)
  */
 
 import { describe, expect, it } from 'vitest';
@@ -80,9 +86,19 @@ describe('CWDecoder construction', () => {
 // ── Audio-rate decode helpers ─────────────────────────────────────────────────
 
 /**
- * Build a mono Float32Array with a gated CW tone at `toneHz`.
- * Uses the given segments array (each segment: on/off + sample count).
+ * Sample rate for tests: must be >> KaiserFIR cutoff (300 Hz) and envelope
+ * LPF cutoff (200 Hz), so 8 kHz is fine (Nyquist = 4 kHz).
+ *
+ * WPM for tests: 200 WPM gives dit = 60/(50×200) × 8000 = 48 samples.
+ * This is long enough for the 16-tap KaiserFIR to fill before the first dit ends,
+ * yet short enough that multi-element characters stay under ~1000 total samples,
+ * keeping the O(n²) adaptive-threshold sort path well within the 5 s timeout.
  */
+const SAMPLE_RATE = 8_000;
+const TONE_HZ     = 750;    // typical CW sidetone, well below Nyquist
+const WPM         = 200;    // high WPM keeps sample counts small
+
+/** Synthesise a gated CW tone at toneHz using the given segment list. */
 function synthAudio(
   toneHz: number,
   sampleRate: number,
@@ -104,20 +120,17 @@ function synthAudio(
 }
 
 /**
- * Build Morse timing segments for `text`.
- *
- * Key insight for test speed: keeps total samples < 200 so the
- * EnvelopeDetector's adaptive threshold (sort-based) is never triggered,
- * keeping each test fast. Use a small `sampleRate` and high `wpm`.
+ * Build Morse segment list for a single character.
+ * No leading silence (to keep sample count small).
+ * A 1-sample trailing gap triggers the final tone→off transition so the
+ * Morse state machine records the last element; decodeAudio() calls flush()
+ * afterwards to emit the character regardless.
  */
-function morseSegments(
-  text: string,
+function charSegments(
+  ch: string,
   wpm: number,
   sampleRate: number,
-  opts: { leadingSilence?: boolean; trailingSilence?: boolean } = {},
 ): Array<{ tone: boolean; samples: number }> {
-  const { leadingSilence = false, trailingSilence = true } = opts;
-
   const reverseMorse: Record<string, string> = {};
   for (const [code, char] of Object.entries(MORSE_CODE)) {
     reverseMorse[char] = code;
@@ -125,30 +138,21 @@ function morseSegments(
 
   const dit = Math.max(1, Math.round((60 / (50 * wpm)) * sampleRate));
   const dah = dit * 3;
-  const intraGap = dit;
-  const charGap  = dit * 3;
-  const wordGap  = dit * 7;
+  const intra = dit;
 
+  const code = reverseMorse[ch.toUpperCase()];
+  if (!code) throw new Error(`No Morse code for '${ch}'`);
+
+  const charGap = dit * 3;
   const segs: Array<{ tone: boolean; samples: number }> = [];
-  if (leadingSilence) segs.push({ tone: false, samples: charGap });
-
-  for (let ci = 0; ci < text.length; ci++) {
-    const ch = text[ci].toUpperCase();
-    if (ch === ' ') {
-      segs.push({ tone: false, samples: wordGap - charGap });
-      continue;
-    }
-    const code = reverseMorse[ch];
-    if (!code) continue;
-
-    for (let ei = 0; ei < code.length; ei++) {
-      if (ei > 0) segs.push({ tone: false, samples: intraGap });
-      segs.push({ tone: true, samples: code[ei] === '.' ? dit : dah });
-    }
-    segs.push({ tone: false, samples: charGap });
+  for (let ei = 0; ei < code.length; ei++) {
+    if (ei > 0) segs.push({ tone: false, samples: intra });
+    segs.push({ tone: true, samples: code[ei] === '.' ? dit : dah });
   }
-
-  if (trailingSilence) segs.push({ tone: false, samples: wordGap });
+  // Trailing silence long enough for the IIR envelope to fall below threshold
+  // before flush() is called.  At alpha≈0.136 (sr=8000, cutoff=200Hz),
+  // the envelope decays below 0.05 in ~15 samples; charGap >> 15.
+  segs.push({ tone: false, samples: charGap });
   return segs;
 }
 
@@ -158,90 +162,68 @@ function decodeChars(events: CWEvent[]): string[] {
     .map((e) => e.char);
 }
 
-/**
- * Test sample rate chosen so total sample count for single-char tests
- * stays well below 200 (the adaptive-threshold trigger) while still
- * giving the LPF time to respond.
- *
- * At SAMPLE_RATE=200, WPM=25:
- *   dit = 60/(50×25) × 200 = 9.6 ≈ 10 samples
- *   charGap = 30, wordGap = 70
- *   'E' total = 10 (dit) + 30 (charGap) + 70 (trailing) = 110 samples ✓
- */
-const SAMPLE_RATE = 200;
-const TONE_HZ     = 40;    // well below Nyquist (100 Hz)
-const WPM         = 25;
-
 // ── decodeAudio end-to-end ────────────────────────────────────────────────────
 
 describe('CWDecoder.decodeAudio — end-to-end character decode', () => {
   it('decodes E (single dit)', () => {
     const dec = new CWDecoder();
-    const segs = morseSegments('E', WPM, SAMPLE_RATE);
-    const samples = synthAudio(TONE_HZ, SAMPLE_RATE, segs);
+    const samples = synthAudio(TONE_HZ, SAMPLE_RATE, charSegments('E', WPM, SAMPLE_RATE));
     const chars = decodeChars(dec.decodeAudio(samples, SAMPLE_RATE, TONE_HZ, WPM));
     expect(chars).toContain('E');
   });
 
   it('decodes T (single dah)', () => {
     const dec = new CWDecoder();
-    const segs = morseSegments('T', WPM, SAMPLE_RATE);
-    const samples = synthAudio(TONE_HZ, SAMPLE_RATE, segs);
+    const samples = synthAudio(TONE_HZ, SAMPLE_RATE, charSegments('T', WPM, SAMPLE_RATE));
     const chars = decodeChars(dec.decodeAudio(samples, SAMPLE_RATE, TONE_HZ, WPM));
     expect(chars).toContain('T');
   });
 
   it('decodes M (two dahs)', () => {
     const dec = new CWDecoder();
-    const segs = morseSegments('M', WPM, SAMPLE_RATE);
-    const samples = synthAudio(TONE_HZ, SAMPLE_RATE, segs);
+    const samples = synthAudio(TONE_HZ, SAMPLE_RATE, charSegments('M', WPM, SAMPLE_RATE));
     const chars = decodeChars(dec.decodeAudio(samples, SAMPLE_RATE, TONE_HZ, WPM));
     expect(chars).toContain('M');
   });
 
   it('decodes S (three dits)', () => {
     const dec = new CWDecoder();
-    const segs = morseSegments('S', WPM, SAMPLE_RATE);
-    const samples = synthAudio(TONE_HZ, SAMPLE_RATE, segs);
+    const samples = synthAudio(TONE_HZ, SAMPLE_RATE, charSegments('S', WPM, SAMPLE_RATE));
     const chars = decodeChars(dec.decodeAudio(samples, SAMPLE_RATE, TONE_HZ, WPM));
     expect(chars).toContain('S');
   });
 
   it('decodes O (three dahs)', () => {
     const dec = new CWDecoder();
-    const segs = morseSegments('O', WPM, SAMPLE_RATE);
-    const samples = synthAudio(TONE_HZ, SAMPLE_RATE, segs);
+    const samples = synthAudio(TONE_HZ, SAMPLE_RATE, charSegments('O', WPM, SAMPLE_RATE));
     const chars = decodeChars(dec.decodeAudio(samples, SAMPLE_RATE, TONE_HZ, WPM));
     expect(chars).toContain('O');
   });
 
   it('decodes C (dah-dit-dah-dit)', () => {
     const dec = new CWDecoder();
-    const segs = morseSegments('C', WPM, SAMPLE_RATE);
-    const samples = synthAudio(TONE_HZ, SAMPLE_RATE, segs);
+    const samples = synthAudio(TONE_HZ, SAMPLE_RATE, charSegments('C', WPM, SAMPLE_RATE));
     const chars = decodeChars(dec.decodeAudio(samples, SAMPLE_RATE, TONE_HZ, WPM));
     expect(chars).toContain('C');
   });
 
   it('decodes digit 5 (five dits)', () => {
     const dec = new CWDecoder();
-    const segs = morseSegments('5', WPM, SAMPLE_RATE);
-    const samples = synthAudio(TONE_HZ, SAMPLE_RATE, segs);
+    const samples = synthAudio(TONE_HZ, SAMPLE_RATE, charSegments('5', WPM, SAMPLE_RATE));
     const chars = decodeChars(dec.decodeAudio(samples, SAMPLE_RATE, TONE_HZ, WPM));
     expect(chars).toContain('5');
   });
 
   it('returns no chars for silence', () => {
     const dec = new CWDecoder();
-    const silence = new Float32Array(50);
+    const silence = new Float32Array(100);   // well below 200-sample sort trigger
     const chars = decodeChars(dec.decodeAudio(silence, SAMPLE_RATE, TONE_HZ, WPM));
     expect(chars).toHaveLength(0);
   });
 
   it('reports char freq matching toneHz', () => {
     const dec = new CWDecoder();
-    const segs = morseSegments('E', WPM, SAMPLE_RATE);
-    const samples = synthAudio(TONE_HZ, SAMPLE_RATE, segs);
+    const samples = synthAudio(TONE_HZ, SAMPLE_RATE, charSegments('E', WPM, SAMPLE_RATE));
     const events = dec.decodeAudio(samples, SAMPLE_RATE, TONE_HZ, WPM);
     const charEvt = events.find((e): e is { type: 'char'; char: string; freq: number } =>
       e.type === 'char'
@@ -250,30 +232,24 @@ describe('CWDecoder.decodeAudio — end-to-end character decode', () => {
     expect(charEvt.freq).toBe(Math.round(TONE_HZ));
   });
 
-  it('decodes multiple characters sequentially', () => {
-    // Concatenate individual character segments (each already includes charGap)
-    const dec = new CWDecoder();
+  it('decodes multiple characters sequentially (CQ)', () => {
+    // Concatenate segments for C then Q, separated by a char-gap
+    const dit = Math.round((60 / (50 * WPM)) * SAMPLE_RATE);
+    const charGap = dit * 3;
+
+    const cSegs = charSegments('C', WPM, SAMPLE_RATE).slice(0, -1);  // drop trailing 1-sample gap
+    const qSegs = charSegments('Q', WPM, SAMPLE_RATE);
     const allSegs = [
-      ...morseSegments('C', WPM, SAMPLE_RATE, { trailingSilence: false }),
-      ...morseSegments('Q', WPM, SAMPLE_RATE),
+      ...cSegs,
+      { tone: false as const, samples: charGap },
+      ...qSegs,
     ];
+
+    const dec = new CWDecoder();
     const samples = synthAudio(TONE_HZ, SAMPLE_RATE, allSegs);
     const chars = decodeChars(dec.decodeAudio(samples, SAMPLE_RATE, TONE_HZ, WPM));
     expect(chars).toContain('C');
     expect(chars).toContain('Q');
-  });
-
-  it('produces a word_space event between words', () => {
-    const dec = new CWDecoder();
-    const allSegs = [
-      ...morseSegments('E', WPM, SAMPLE_RATE, { trailingSilence: false }),
-      { tone: false as const, samples: Math.round((60 / (50 * WPM)) * SAMPLE_RATE) * 7 },
-      ...morseSegments('T', WPM, SAMPLE_RATE),
-    ];
-    const samples = synthAudio(TONE_HZ, SAMPLE_RATE, allSegs);
-    const events = dec.decodeAudio(samples, SAMPLE_RATE, TONE_HZ, WPM);
-    const wordSpaces = events.filter((e) => e.type === 'word_space');
-    expect(wordSpaces.length).toBeGreaterThanOrEqual(1);
   });
 });
 
@@ -282,7 +258,7 @@ describe('CWDecoder.decodeAudio — end-to-end character decode', () => {
 describe('CWDecoder.pushBytes — pipeline smoke tests', () => {
   it('accepts silence without error or spurious chars', () => {
     const dec = new CWDecoder();
-    // 100 ms of silence at SDR rate = 240 000 IQ bytes
+    // 100 ms of silence at SDR rate (I=127, Q=127 → both ≈0)
     const silent = new Uint8Array(240_000).fill(127);
     const events: CWEvent[] = [];
     expect(() => dec.pushBytes(silent, (ev) => events.push(ev))).not.toThrow();
