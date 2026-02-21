@@ -138,8 +138,8 @@ class CWSignalChain:
 
     # Minimum ratio of p90/p5 required to consider the signal worth decoding.
     # Pure Gaussian noise after FIR decimation has p90/p5 ≈ 1.5–2.
-    # A real CW carrier above the noise floor gives p90/p5 >> 3.
-    MIN_SNR_RATIO = 3.5
+    # A real HF CW carrier via NooElec upconverter at 20 dB gain reaches ~2.5–4.
+    MIN_SNR_RATIO = 2.5
     # How long (in audio samples) to keep the gate open after last high-SNR detection.
     # 10 seconds at 24 kHz = 240 000 samples → covers inter-character and word gaps.
     GATE_HOLD_SAMPLES = AUDIO_RATE * 10
