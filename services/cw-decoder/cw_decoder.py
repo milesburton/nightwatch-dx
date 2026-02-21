@@ -144,8 +144,8 @@ class CWSignalChain:
     # 10 seconds at 24 kHz = 240 000 samples → covers inter-character and word gaps.
     GATE_HOLD_SAMPLES = AUDIO_RATE * 10
 
-    # Log SNR diagnostics once per minute (every N threshold updates)
-    _LOG_INTERVAL = int(60 * AUDIO_RATE / max(THRESHOLD_UPDATE_INTERVAL, 1))
+    # Log SNR diagnostics once per minute (wall-clock time)
+    _LOG_INTERVAL_SEC = 60.0
 
     def _update_threshold(self) -> None:
         """Recompute adaptive threshold from recent envelope history."""
@@ -156,10 +156,12 @@ class CWSignalChain:
         p90 = float(np.percentile(arr, 90))
         spread = p90 - p5
 
-        # Periodic diagnostic so we can tune SNR parameters
-        self._log_ctr = getattr(self, '_log_ctr', 0) + 1
-        if self._log_ctr >= self._LOG_INTERVAL:
-            self._log_ctr = 0
+        # Periodic diagnostic so we can tune SNR parameters (wall-clock timer)
+        now = time.monotonic()
+        if not hasattr(self, '_last_log_ts'):
+            self._last_log_ts = now
+        if now - self._last_log_ts >= self._LOG_INTERVAL_SEC:
+            self._last_log_ts = now
             snr_diag = p90 / max(p5, 1e-9)
             log.info(
                 "SNR diag: p5=%.4f p90=%.4f ratio=%.2f gate=%s thr=%.4f",
