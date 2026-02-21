@@ -18,6 +18,7 @@ Outbound message types:
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -367,36 +368,81 @@ class Hub:
         ))
 
 # ── IQ reader loop ─────────────────────────────────────────────────────────────
+#
+# Architecture: the CWSignalChain.process() call is CPU-heavy (two FIR passes
+# over 65 kB per chunk).  Running it directly in the asyncio event loop starves
+# the TCP reader — the kernel socket buffer fills, backpressure stalls the mux
+# broadcast thread, and we effectively see data at 0.2× realtime while the
+# signal chain only ever looks at stale buffered data.
+#
+# Fix: a dedicated daemon thread reads from the TCP socket as fast as possible
+# into an asyncio.Queue (bounded to 4 chunks to limit latency, not memory).
+# The event loop drains the queue and offloads process() to the thread-pool
+# executor so it never blocks the event loop either.
+
+async def _drain_tcp(
+    reader: asyncio.StreamReader,
+    queue: "asyncio.Queue[bytes | None]",
+) -> None:
+    """Drain TCP stream into queue as fast as possible.
+
+    Drops the oldest chunk when the queue is full so processing latency
+    stays bounded — for CW, a fresh chunk is always more useful than a
+    stale one that's been sitting in a buffer.
+    """
+    try:
+        while True:
+            chunk = await reader.read(65536)
+            if not chunk:
+                break
+            try:
+                queue.put_nowait(chunk)
+            except asyncio.QueueFull:
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    queue.get_nowait()
+                queue.put_nowait(chunk)
+    finally:
+        await queue.put(None)  # sentinel: tells consumer we're done
+
 
 async def iq_reader(hub: Hub) -> None:
-    chain = CWSignalChain()
+    loop = asyncio.get_running_loop()
+
     while True:
+        chain = CWSignalChain()
+        writer = None
         try:
             log.info("Connecting to TCP mux at %s:%d…", MUX_HOST, MUX_PORT)
             reader, writer = await asyncio.open_connection(MUX_HOST, MUX_PORT)
-            # Read and discard the 12-byte RTL0 magic header
             header = await reader.readexactly(12)
             if not header.startswith(b"RTL"):
                 raise ValueError(f"Unexpected header: {header!r}")
             log.info("Connected to mux. Decoding CW on %.3f MHz…", CW_FREQ_HZ / 1e6)
             await hub.set_connected(True)
 
+            # Bounded queue: 4 chunks max (~1 MB) keeps latency low.
+            queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=4)
+            drain_task = asyncio.create_task(_drain_tcp(reader, queue))
+
             while True:
-                chunk = await reader.read(65536)
-                if not chunk:
+                chunk = await queue.get()
+                if chunk is None:
                     break
-                events = chain.process(chunk)
+                # Offload CPU-heavy FIR processing to thread pool so the
+                # event loop stays free to keep draining the TCP stream.
+                events = await loop.run_in_executor(None, chain.process, chunk)
                 for ev in events:
                     await hub.broadcast(ev)
+
+            drain_task.cancel()
 
         except Exception as e:
             log.warning("Mux connection lost: %s, retrying in 5s…", e)
         finally:
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except Exception:
-                pass
+            if writer is not None:
+                with contextlib.suppress(Exception):
+                    writer.close()
+                    await writer.wait_closed()
             await hub.set_connected(False)
         await asyncio.sleep(5)
 
