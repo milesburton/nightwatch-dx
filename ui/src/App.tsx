@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { CWLogPanel } from './components/CWLogPanel.js';
 import { SSTVGalleryPanel } from './components/SSTVGalleryPanel.js';
 import { WaterfallPanel } from './components/WaterfallPanel.js';
-import type { CWSocketMessage } from './types.js';
 import { addIQListener } from './workers/iqWorkerSingleton.js';
 import { useVersionPoller } from './utils/useVersionPoller.js';
+import type { CWSocketMessage } from './types.js';
 
 // ── Starfield background ───────────────────────────────────────────────────────
 
@@ -62,8 +62,9 @@ function useStarfield() {
 // A signal is considered "active" if we received something from it within
 // the last ACTIVE_TTL_MS milliseconds.
 const ACTIVE_TTL_MS  = 10_000;
-// Hardware is considered down if no FFT data for this long (rtl_tcp crashed/unplugged)
-const HW_TIMEOUT_MS  = 5_000;
+// Hardware is considered down if no FFT data for this long (rtl_tcp crashed/unplugged).
+// 15 s gives the iqWorker time to fill its ring buffer and send the first FFT on startup.
+const HW_TIMEOUT_MS  = 15_000;
 
 function useSignalStatus() {
   const [iqConnected,  setIqConnected]  = useState(false);

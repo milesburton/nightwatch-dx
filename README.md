@@ -1,4 +1,4 @@
-# SDR Monitor
+# 20m Signal Decoder
 
 Live CW and SSTV decoding from an RTL-SDR dongle, displayed in a web UI.
 

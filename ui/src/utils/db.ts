@@ -1,5 +1,5 @@
 /**
- * IndexedDB wrapper for persistent SDR monitor storage.
+ * IndexedDB wrapper for persistent 20m Signal Decoder storage.
  *
  * DB: sdr-monitor  version: 1
  * Stores:

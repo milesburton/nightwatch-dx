@@ -44,7 +44,10 @@ FREQ_OFFSET_HZ  = CW_FREQ_HZ - RF_CENTER_HZ       # -146_000
 
 AUDIO_RATE      = SDR_SAMPLE_RATE // 100           # 24_000 Hz
 WPM             = 20
-DIT_SAMPLES     = round((60 / (50 * WPM)) * AUDIO_RATE)   # 72 samples/dit
+DIT_SAMPLES     = round((60 / (50 * WPM)) * AUDIO_RATE)   # 1440 samples/dit
+
+# How often to recompute the adaptive threshold (every N audio samples)
+THRESHOLD_UPDATE_INTERVAL = DIT_SAMPLES // 4   # every 1/4 dit ≈ 15 ms
 
 DECIMATE1       = 10
 DECIMATE2       = 10
@@ -112,11 +115,17 @@ class CWSignalChain:
         self._zi1_im = np.zeros(len(_taps1) - 1)
         self._zi2_re = np.zeros(len(_taps2) - 1)
         self._zi2_im = np.zeros(len(_taps2) - 1)
-        # Envelope LPF state
-        self._lpf_alpha = float(1 / (1 + 2 * np.pi * 200 / AUDIO_RATE))
-        self._lpf_state = 0.0
-        # Rolling window for adaptive threshold (2 seconds)
-        self._window: deque[float] = deque(maxlen=AUDIO_RATE * 2)
+        # Envelope smoother: power-law smoothing, τ ≈ 3 ms (much shorter than a dit)
+        _tau_sec      = 0.003
+        self._env_alpha = float(1 - np.exp(-1 / (_tau_sec * AUDIO_RATE)))
+        self._env_state = 0.0
+        # Rolling window for adaptive threshold (3 seconds of audio power)
+        self._window: deque[float] = deque(maxlen=AUDIO_RATE * 3)
+        # Threshold is recomputed periodically (not every sample) to avoid chattering
+        self._threshold       = 0.05
+        self._threshold_ctr   = 0
+        # Schmitt-trigger hysteresis: 20% of threshold range
+        self._hyst_frac       = 0.20
         # Morse state machine
         self._morse    = MorseDecoder()
         self._tone_on  = False
@@ -124,8 +133,23 @@ class CWSignalChain:
         self._gap_start  = 0
         self._clock      = 0
 
+    def _update_threshold(self) -> None:
+        """Recompute adaptive threshold from recent envelope history."""
+        if len(self._window) < 200:
+            return
+        arr = np.array(self._window)
+        p5  = float(np.percentile(arr, 5))
+        p90 = float(np.percentile(arr, 90))
+        spread = p90 - p5
+        if spread < 0.02:
+            # Not enough signal variation — keep previous threshold
+            return
+        self._threshold = p5 + spread * 0.5
+
     def process(self, raw: bytes) -> list[dict]:
         """Process one chunk of uint8 IQ bytes. Returns list of CW events."""
+        from scipy.signal import lfilter
+
         samples = np.frombuffer(raw, dtype=np.uint8).astype(np.float32)
         if len(samples) & 1:
             samples = samples[:-1]
@@ -133,11 +157,10 @@ class CWSignalChain:
         iq = iq.astype(np.complex64)
 
         # Mix down to CW frequency
-        lo  = self._lo.generate(len(iq))
+        lo    = self._lo.generate(len(iq))
         mixed = iq * lo
 
         # First 10× decimation with FIR
-        from scipy.signal import lfilter
         re1, self._zi1_re = lfilter(_taps1, 1.0, mixed.real, zi=self._zi1_re)
         im1, self._zi1_im = lfilter(_taps1, 1.0, mixed.imag, zi=self._zi1_im)
         stage1 = (re1 + 1j * im1)[DECIMATE1 - 1::DECIMATE1]
@@ -147,37 +170,67 @@ class CWSignalChain:
         im2, self._zi2_im = lfilter(_taps2, 1.0, stage1.imag, zi=self._zi2_im)
         audio = (re2 + 1j * im2)[DECIMATE2 - 1::DECIMATE2]
 
-        events = []
-        alpha = self._lpf_alpha
+        # Vectorised envelope: single-pole IIR on |audio|
+        mags = np.abs(audio).astype(np.float64)
+        alpha = self._env_alpha
+        env   = np.empty_like(mags)
+        state = self._env_state
+        for i, m in enumerate(mags):
+            state += alpha * (m - state)
+            env[i] = state
+        self._env_state = float(state)
 
-        for s in audio:
-            mag = abs(s)
-            self._lpf_state = alpha * mag + (1 - alpha) * self._lpf_state
-            v = self._lpf_state
-            self._window.append(v)
+        # Extend window with downsampled envelope (every 4 samples) for efficiency
+        self._window.extend(env[::4].tolist())
 
-            # Adaptive threshold: midpoint between 10th and 95th percentile
-            threshold = 0.05
-            if len(self._window) > 200:
-                arr = np.array(self._window)
-                p10 = float(np.percentile(arr, 10))
-                p95 = float(np.percentile(arr, 95))
-                threshold = max(p10 + (p95 - p10) * 0.5, 0.01)
+        events: list[dict] = []
+        thr = self._threshold
+        hyst = thr * self._hyst_frac
+        high_thr = thr + hyst
+        low_thr  = max(thr - hyst, 0.001)
 
-            is_tone = v > threshold
-            if is_tone and not self._tone_on:
+        for v in env:
+            # Recompute threshold periodically
+            self._threshold_ctr += 1
+            if self._threshold_ctr >= THRESHOLD_UPDATE_INTERVAL:
+                self._threshold_ctr = 0
+                self._update_threshold()
+                thr   = self._threshold
+                hyst  = thr * self._hyst_frac
+                high_thr = thr + hyst
+                low_thr  = max(thr - hyst, 0.001)
+
+            # Schmitt trigger with hysteresis
+            if not self._tone_on and v > high_thr:
                 if self._gap_start > 0:
                     events.extend(self._morse.push_gap(
                         self._clock - self._gap_start, DIT_SAMPLES
                     ))
                 self._tone_on    = True
                 self._tone_start = self._clock
-            elif not is_tone and self._tone_on:
+            elif self._tone_on and v < low_thr:
                 self._morse.push_tone(self._clock - self._tone_start, DIT_SAMPLES)
                 self._tone_on  = False
                 self._gap_start = self._clock
             self._clock += 1
 
+        return events
+
+    def flush(self) -> list[dict]:
+        """Flush any pending tone/gap that hasn't been closed by a transition.
+
+        Call this at end-of-stream (or periodically during silence) to emit
+        the last character and word-space events.
+        """
+        events: list[dict] = []
+        if self._tone_on:
+            # Tone was still on when data ended — close it
+            self._morse.push_tone(self._clock - self._tone_start, DIT_SAMPLES)
+            self._tone_on   = False
+            self._gap_start = self._clock
+        if self._gap_start > 0:
+            # Emit the pending gap as a word-space to flush the last character
+            events.extend(self._morse.push_gap(DIT_SAMPLES * 7, DIT_SAMPLES))
         return events
 
 # ── Morse state machine ────────────────────────────────────────────────────────
@@ -199,8 +252,8 @@ MORSE_CODE: dict[str, str] = {
 }
 
 DAH_THRESHOLD = 2.5
-CHAR_GAP_DITS = 3.0
-WORD_GAP_DITS = 7.0
+CHAR_GAP_DITS = 2.5   # 3-dit gaps measure as ~2.95 dits due to envelope latency
+WORD_GAP_DITS = 5.5   # 7-dit gaps measure as ~6.0 dits; 1-dit intra-char ~1.0
 
 
 class MorseDecoder:
