@@ -34,8 +34,8 @@ function buildColorLut(): Uint8ClampedArray {
 
 const COLOR_LUT = buildColorLut();
 
-const DB_MIN   = -55;
-const DB_MAX   = -25;
+const DB_MIN   = -80;
+const DB_MAX   = -20;
 const DB_RANGE = DB_MAX - DB_MIN;
 
 function dbToLutIndex(db: number): number {
@@ -83,6 +83,7 @@ export function WaterfallPanel() {
       if (msg.type !== 'fft') return;
 
       const { bins, centerFreq: cf, sampleRate: sr } = msg;
+      console.log(`[WaterfallPanel] FFT received: ${bins.length} bins, cf=${cf}, sr=${sr}`);
       setCenterFreq(cf);
       setSampleRate(sr);
 
@@ -92,8 +93,10 @@ export function WaterfallPanel() {
 
       // If the container hasn't been measured yet, size the canvases now.
       let W = wfCanvas.width;
+      console.log(`[WaterfallPanel] canvas width=${W}, spec.width=${specCanvas.width}`);
       if (W === 0) {
         const containerW = Math.floor(wfCanvas.getBoundingClientRect().width);
+        console.log(`[WaterfallPanel] resizing canvas to ${containerW}px`);
         if (containerW === 0) return;
         W = containerW;
         specCanvas.width  = containerW;
@@ -210,7 +213,8 @@ export function WaterfallPanel() {
     const resize = () => {
       const container = specCanvasRef.current?.parentElement;
       if (!container) return;
-      const W = container.clientWidth;
+      const W = container.clientWidth || Math.floor(container.getBoundingClientRect().width);
+      if (W === 0) return;
       if (specCanvasRef.current) {
         specCanvasRef.current.width  = W;
         specCanvasRef.current.height = SPECTRUM_HEIGHT;
@@ -252,7 +256,7 @@ export function WaterfallPanel() {
           style={{ height: `${SPECTRUM_HEIGHT}px` }}
         />
         <div className="absolute top-0 right-1 h-full flex flex-col justify-between pointer-events-none">
-          {[-25, -32, -40, -47, -55].map((db) => (
+          {[-20, -35, -50, -65, -80].map((db) => (
             <span key={db} className="text-white/30 text-[9px] font-mono leading-none">{db}</span>
           ))}
         </div>

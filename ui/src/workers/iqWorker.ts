@@ -95,6 +95,10 @@ function processFFT(raw: Uint8Array): void {
     const bins = Array.from(fftAccum, (v) => v / FFT_AVERAGES);
     fftFrameCount = 0;
     fftAccum.fill(0);
+    // Diagnostic: log dB range on first few FFTs so we can calibrate the display
+    const minDb = Math.min(...bins);
+    const maxDb = Math.max(...bins);
+    console.log(`[iqWorker] FFT posted: min=${minDb.toFixed(1)} dB  max=${maxDb.toFixed(1)} dB`);
     self.postMessage({ type: 'fft', bins, centerFreq: RF_CENTER_HZ, sampleRate: SDR_SAMPLE_RATE } as IQWorkerMessage);
   }
 }
