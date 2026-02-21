@@ -1,22 +1,3 @@
-"""
-CW (Morse code) decoder service.
-
-Connects to the rtl-bridge TCP multiplexer (port 1235, rtl_tcp-compatible
-byte stream of uint8 IQ samples at 2.4 Msps) and decodes CW on 14.029 MHz.
-
-Signal chain:
-  uint8 IQ → complex64 → mix by -freqOffset → 10× FIR → 10× FIR
-           → envelope → adaptive threshold → Morse state machine
-
-Broadcasts JSON messages over WebSocket (aiohttp) on WS_PORT (default 8765).
-
-Outbound message types:
-  {"type": "char",       "char": "A", "freq": 14029000, "ts": "..."}
-  {"type": "word_space", "ts": "..."}
-  {"type": "status",     "connected": true,  "freq": 14029000}
-  {"type": "status",     "connected": false, "freq": 14029000}
-"""
-
 import asyncio
 import contextlib
 import json
@@ -29,8 +10,6 @@ from datetime import UTC, datetime
 import numpy as np
 from aiohttp import web
 
-# ── Configuration ──────────────────────────────────────────────────────────────
-
 MUX_HOST = os.environ.get("MUX_HOST", "rtl-bridge")
 MUX_PORT = int(os.environ.get("MUX_PORT", "1235"))
 WS_PORT  = int(os.environ.get("WS_PORT",  "8765"))
@@ -38,28 +17,25 @@ WS_PORT  = int(os.environ.get("WS_PORT",  "8765"))
 SDR_SAMPLE_RATE = 2_400_000
 SDR_CENTER_HZ   = 139_175_000
 LO_OFFSET_HZ    = 125_000_000
-RF_CENTER_HZ    = SDR_CENTER_HZ - LO_OFFSET_HZ   # 14_175_000
+RF_CENTER_HZ    = SDR_CENTER_HZ - LO_OFFSET_HZ
 CW_FREQ_HZ      = 14_029_000
-FREQ_OFFSET_HZ  = CW_FREQ_HZ - RF_CENTER_HZ       # -146_000
+FREQ_OFFSET_HZ  = CW_FREQ_HZ - RF_CENTER_HZ
 
-AUDIO_RATE      = SDR_SAMPLE_RATE // 100           # 24_000 Hz
-WPM             = 20
-DIT_SAMPLES     = round((60 / (50 * WPM)) * AUDIO_RATE)   # 1440 samples/dit
+AUDIO_RATE  = SDR_SAMPLE_RATE // 100
+WPM         = 20
+DIT_SAMPLES = round((60 / (50 * WPM)) * AUDIO_RATE)
 
-# How often to recompute the adaptive threshold (every N audio samples)
-THRESHOLD_UPDATE_INTERVAL = max(DIT_SAMPLES // 8, 50)   # every 1/8 dit ≈ 7.5 ms
+THRESHOLD_UPDATE_INTERVAL = max(DIT_SAMPLES // 8, 50)
 
-DECIMATE1       = 10
-DECIMATE2       = 10
-INTERMEDIATE    = SDR_SAMPLE_RATE // DECIMATE1     # 240_000 Hz
+DECIMATE1    = 10
+DECIMATE2    = 10
+INTERMEDIATE = SDR_SAMPLE_RATE // DECIMATE1
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [cw] %(message)s")
 log = logging.getLogger(__name__)
 
-# ── FIR filter builder ─────────────────────────────────────────────────────────
 
 def kaiser_lowpass(cutoff: float, sample_rate: float, duration: float = 0.001, beta: float = 8.0) -> np.ndarray:
-    """Builds a Kaiser-windowed low-pass FIR filter (same parameters as KaiserFIR.ts)."""
     num_taps = int(duration * sample_rate) | 1
     center   = (num_taps - 1) / 2
     norm_cut = 2.0 * cutoff / sample_rate
@@ -67,32 +43,29 @@ def kaiser_lowpass(cutoff: float, sample_rate: float, duration: float = 0.001, b
     x        = n - center
     with np.errstate(invalid='ignore', divide='ignore'):
         sinc = np.where(x == 0, norm_cut, np.sin(np.pi * x * norm_cut) / (np.pi * x))
-    window   = np.kaiser(num_taps, beta)
-    taps     = sinc * window
-    taps    /= taps.sum()
+    window = np.kaiser(num_taps, beta)
+    taps   = sinc * window
+    taps  /= taps.sum()
     return taps.astype(np.float32)
 
-# Build FIR taps once at startup
+
 _taps1 = kaiser_lowpass(INTERMEDIATE / 2, SDR_SAMPLE_RATE)
 _taps2 = kaiser_lowpass(AUDIO_RATE  / 2, INTERMEDIATE)
 
-# ── LO oscillator ─────────────────────────────────────────────────────────────
 
 class LOOscillator:
-    """Allocation-free complex LO; advances via angle-addition recursion."""
     def __init__(self, freq_hz: float, sample_rate: float) -> None:
-        step           = 2 * np.pi * freq_hz / sample_rate
-        self._step_re  = float(np.cos(step))
-        self._step_im  = float(-np.sin(step))   # negative = mix-down
-        self._re       = 1.0
-        self._im       = 0.0
+        step          = 2 * np.pi * freq_hz / sample_rate
+        self._step_re = float(np.cos(step))
+        self._step_im = float(-np.sin(step))
+        self._re      = 1.0
+        self._im      = 0.0
         self._norm_ctr = 0
 
     def generate(self, n: int) -> np.ndarray:
-        """Returns n complex samples of the LO signal."""
         out = np.empty(n, dtype=np.complex64)
         re, im = self._re, self._im
-        sr, si  = self._step_re, self._step_im
+        sr, si = self._step_re, self._step_im
         for i in range(n):
             out[i] = complex(re, im)
             re, im = re * sr - im * si, re * si + im * sr
@@ -105,66 +78,52 @@ class LOOscillator:
         self._re, self._im = re, im
         return out
 
-# ── CW signal chain ────────────────────────────────────────────────────────────
 
 class CWSignalChain:
-    def __init__(self) -> None:
-        self._lo     = LOOscillator(FREQ_OFFSET_HZ, SDR_SAMPLE_RATE)
-        # FIR state (zi for lfilter)
-        self._zi1_re = np.zeros(len(_taps1) - 1)
-        self._zi1_im = np.zeros(len(_taps1) - 1)
-        self._zi2_re = np.zeros(len(_taps2) - 1)
-        self._zi2_im = np.zeros(len(_taps2) - 1)
-        # Envelope smoother: power-law smoothing, τ ≈ 1 ms (fast attack, tracks keying)
-        _tau_sec      = 0.001
-        self._env_alpha = float(1 - np.exp(-1 / (_tau_sec * AUDIO_RATE)))
-        self._env_state = 0.0
-        # Rolling window for adaptive threshold (3 seconds of audio power)
-        self._window: deque[float] = deque(maxlen=AUDIO_RATE * 3)
-        # Threshold is recomputed periodically (not every sample) to avoid chattering
-        self._threshold       = 0.05
-        self._threshold_ctr   = 0
-        # Schmitt-trigger hysteresis: 20% of threshold range
-        self._hyst_frac       = 0.20
-        # Morse state machine
-        self._morse    = MorseDecoder()
-        self._tone_on  = False
-        self._tone_start = 0
-        self._gap_start  = 0
-        self._clock      = 0
-
-    # Log SNR diagnostics once per minute (wall-clock time)
     _LOG_INTERVAL_SEC = 60.0
 
+    def __init__(self) -> None:
+        self._lo      = LOOscillator(FREQ_OFFSET_HZ, SDR_SAMPLE_RATE)
+        self._zi1_re  = np.zeros(len(_taps1) - 1)
+        self._zi1_im  = np.zeros(len(_taps1) - 1)
+        self._zi2_re  = np.zeros(len(_taps2) - 1)
+        self._zi2_im  = np.zeros(len(_taps2) - 1)
+        _tau_sec      = 0.001
+        self._env_alpha  = float(1 - np.exp(-1 / (_tau_sec * AUDIO_RATE)))
+        self._env_state  = 0.0
+        self._window: deque[float] = deque(maxlen=AUDIO_RATE * 3)
+        self._threshold     = 0.05
+        self._threshold_ctr = 0
+        self._hyst_frac     = 0.20
+        self._morse         = MorseDecoder()
+        self._tone_on       = False
+        self._tone_start    = 0
+        self._gap_start     = 0
+        self._clock         = 0
+
+    _MIN_SNR_RATIO = 2.5
+
     def _update_threshold(self) -> None:
-        """Recompute adaptive threshold from recent envelope history."""
         if len(self._window) < 20:
             return
-        arr = np.array(self._window)
-        p5  = float(np.percentile(arr, 5))
-        p90 = float(np.percentile(arr, 90))
-        spread = p90 - p5
-
-        # Periodic diagnostic (wall-clock timer)
-        now = time.monotonic()
+        arr  = np.array(self._window)
+        p5   = float(np.percentile(arr, 5))
+        p90  = float(np.percentile(arr, 90))
+        now  = time.monotonic()
         if not hasattr(self, '_last_log_ts'):
             self._last_log_ts = now
         if now - self._last_log_ts >= self._LOG_INTERVAL_SEC:
             self._last_log_ts = now
-            log.info(
-                "Threshold diag: p5=%.4f p90=%.4f spread=%.4f thr=%.4f",
-                p5, p90, spread, self._threshold,
-            )
-
+            snr = p90 / p5 if p5 > 1e-9 else 0
+            log.info("threshold p5=%.4f p90=%.4f snr=%.2fx thr=%.4f", p5, p90, snr, self._threshold)
         if p5 < 1e-9:
             return
-        # Threshold = midpoint between noise floor (p5) and signal peaks (p90).
-        # Even a small spread (weak HF signal 7 dB above noise) is enough to set
-        # a valid threshold — the Schmitt hysteresis handles noise immunity.
-        self._threshold = p5 + spread * 0.5
+        if p90 / p5 < self._MIN_SNR_RATIO:
+            self._threshold = p90 * 10
+            return
+        self._threshold = p5 + (p90 - p5) * 0.5
 
     def process(self, raw: bytes) -> list[dict]:
-        """Process one chunk of uint8 IQ bytes. Returns list of CW events."""
         from scipy.signal import lfilter
 
         samples = np.frombuffer(raw, dtype=np.uint8).astype(np.float32)
@@ -173,22 +132,17 @@ class CWSignalChain:
         iq = ((samples[0::2] - 127.5) + 1j * (samples[1::2] - 127.5)) / 127.5
         iq = iq.astype(np.complex64)
 
-        # Mix down to CW frequency
-        lo    = self._lo.generate(len(iq))
-        mixed = iq * lo
+        mixed = iq * self._lo.generate(len(iq))
 
-        # First 10× decimation with FIR
         re1, self._zi1_re = lfilter(_taps1, 1.0, mixed.real, zi=self._zi1_re)
         im1, self._zi1_im = lfilter(_taps1, 1.0, mixed.imag, zi=self._zi1_im)
         stage1 = (re1 + 1j * im1)[DECIMATE1 - 1::DECIMATE1]
 
-        # Second 10× decimation with FIR
         re2, self._zi2_re = lfilter(_taps2, 1.0, stage1.real, zi=self._zi2_re)
         im2, self._zi2_im = lfilter(_taps2, 1.0, stage1.imag, zi=self._zi2_im)
         audio = (re2 + 1j * im2)[DECIMATE2 - 1::DECIMATE2]
 
-        # Vectorised envelope: single-pole IIR on |audio|
-        mags = np.abs(audio).astype(np.float64)
+        mags  = np.abs(audio).astype(np.float64)
         alpha = self._env_alpha
         env   = np.empty_like(mags)
         state = self._env_state
@@ -197,60 +151,47 @@ class CWSignalChain:
             env[i] = state
         self._env_state = float(state)
 
-        # Extend window with downsampled envelope (every 4 samples) for efficiency
         self._window.extend(env[::4].tolist())
 
         events: list[dict] = []
-        thr = self._threshold
-        hyst = thr * self._hyst_frac
+        thr      = self._threshold
+        hyst     = thr * self._hyst_frac
         high_thr = thr + hyst
         low_thr  = max(thr - hyst, 0.001)
 
         for v in env:
-            # Recompute threshold periodically
             self._threshold_ctr += 1
             if self._threshold_ctr >= THRESHOLD_UPDATE_INTERVAL:
                 self._threshold_ctr = 0
                 self._update_threshold()
-                thr   = self._threshold
-                hyst  = thr * self._hyst_frac
+                thr      = self._threshold
+                hyst     = thr * self._hyst_frac
                 high_thr = thr + hyst
                 low_thr  = max(thr - hyst, 0.001)
 
-            # Schmitt trigger with hysteresis
             if not self._tone_on and v > high_thr:
                 if self._gap_start > 0:
-                    events.extend(self._morse.push_gap(
-                        self._clock - self._gap_start, DIT_SAMPLES
-                    ))
+                    events.extend(self._morse.push_gap(self._clock - self._gap_start, DIT_SAMPLES))
                 self._tone_on    = True
                 self._tone_start = self._clock
             elif self._tone_on and v < low_thr:
                 self._morse.push_tone(self._clock - self._tone_start, DIT_SAMPLES)
-                self._tone_on  = False
+                self._tone_on   = False
                 self._gap_start = self._clock
             self._clock += 1
 
         return events
 
     def flush(self) -> list[dict]:
-        """Flush any pending tone/gap that hasn't been closed by a transition.
-
-        Call this at end-of-stream (or periodically during silence) to emit
-        the last character and word-space events.
-        """
-        events: list[dict] = []
+        events = []
         if self._tone_on:
-            # Tone was still on when data ended — close it
             self._morse.push_tone(self._clock - self._tone_start, DIT_SAMPLES)
             self._tone_on   = False
             self._gap_start = self._clock
         if self._gap_start > 0:
-            # Emit the pending gap as a word-space to flush the last character
             events.extend(self._morse.push_gap(DIT_SAMPLES * 7, DIT_SAMPLES))
         return events
 
-# ── Morse state machine ────────────────────────────────────────────────────────
 
 MORSE_CODE: dict[str, str] = {
     '.-': 'A', '-...': 'B', '-.-.': 'C', '-..': 'D', '.': 'E',
@@ -268,36 +209,19 @@ MORSE_CODE: dict[str, str] = {
     '...-..-': '$', '.--.-.': '@',
 }
 
-DAH_THRESHOLD = 2.0   # tones ≥ 2× dit → dah (real keying: dahs are 2.5–3.5× dit)
-CHAR_GAP_DITS = 2.0   # gaps ≥ 2× dit → char boundary (real: 1.5–3.5 measured)
-WORD_GAP_DITS = 4.5   # gaps ≥ 4.5× dit → word boundary (real: 5–8 measured)
+DAH_THRESHOLD = 2.0
+CHAR_GAP_DITS = 2.0
+WORD_GAP_DITS = 4.5
 
 
 class MorseDecoder:
-    """Morse state machine with adaptive dit-length estimation.
-
-    Observes the actual durations of transmitted tones and continuously
-    updates its estimate of the dit length.  This makes the decoder
-    speed-independent (works at 10–40 WPM without reconfiguration) and
-    tolerant of operators whose timing drifts.
-
-    Estimation strategy:
-      - Every tone is classified as dit or dah using the *current* dit estimate.
-      - Dit durations are fed into an EWMA; dah durations are divided by 3
-        before being fed in (so both contribute to the same underlying dit estimate).
-      - The estimate is clamped to the range 5–200 WPM to prevent runaway.
-    """
-
-    # EWMA weight for the dit estimator: 0.15 → smoothing over ~6 tones
     _DIT_ALPHA = 0.15
-
-    # Clamp dit estimate: 5 WPM → 480 ms/dit; 40 WPM → 30 ms/dit at 24 kHz
-    _DIT_MIN = int(AUDIO_RATE * 0.030)   # 40 WPM
-    _DIT_MAX = int(AUDIO_RATE * 0.480)   # 5 WPM
+    _DIT_MIN   = int(AUDIO_RATE * 0.030)
+    _DIT_MAX   = int(AUDIO_RATE * 0.480)
 
     def __init__(self) -> None:
         self._symbols: list[str] = []
-        self._dit_est = float(DIT_SAMPLES)   # start at configured 20 WPM
+        self._dit_est = float(DIT_SAMPLES)
 
     @property
     def dit(self) -> int:
@@ -306,10 +230,9 @@ class MorseDecoder:
     def push_tone(self, duration: int, _dit_ignored: int) -> None:
         dit = self.dit
         if duration < dit * 0.4:
-            return   # too short — noise spike
+            return
         is_dit = duration < dit * DAH_THRESHOLD
         self._symbols.append('.' if is_dit else '-')
-        # Update dit estimate: dah counts as 3 dits
         observed = duration if is_dit else duration / 3.0
         self._dit_est += self._DIT_ALPHA * (observed - self._dit_est)
 
@@ -328,14 +251,13 @@ class MorseDecoder:
     def _flush(self, ts: str) -> list[dict]:
         if not self._symbols:
             return []
-        code  = ''.join(self._symbols)
-        char  = MORSE_CODE.get(code, f'[{code}]')
+        code = ''.join(self._symbols)
+        char = MORSE_CODE.get(code, f'[{code}]')
         self._symbols = []
         wpm = int(round(60 / (50 * (self._dit_est / AUDIO_RATE)))) if self._dit_est > 0 else 0
-        log.debug("Decoded %r from %r  dit_est=%.0f samp (%d WPM)", char, code, self._dit_est, wpm)
+        log.debug("decoded %r from %r  dit_est=%.0f samp (%d WPM)", char, code, self._dit_est, wpm)
         return [{'type': 'char', 'char': char, 'freq': CW_FREQ_HZ, 'ts': ts}]
 
-# ── WebSocket broadcast hub ────────────────────────────────────────────────────
 
 class Hub:
     def __init__(self) -> None:
@@ -368,29 +290,11 @@ class Hub:
             {'type': 'status', 'connected': self._connected, 'freq': CW_FREQ_HZ}
         ))
 
-# ── IQ reader loop ─────────────────────────────────────────────────────────────
-#
-# Architecture: the CWSignalChain.process() call is CPU-heavy (two FIR passes
-# over 65 kB per chunk).  Running it directly in the asyncio event loop starves
-# the TCP reader — the kernel socket buffer fills, backpressure stalls the mux
-# broadcast thread, and we effectively see data at 0.2× realtime while the
-# signal chain only ever looks at stale buffered data.
-#
-# Fix: a dedicated daemon thread reads from the TCP socket as fast as possible
-# into an asyncio.Queue (bounded to 4 chunks to limit latency, not memory).
-# The event loop drains the queue and offloads process() to the thread-pool
-# executor so it never blocks the event loop either.
 
 async def _drain_tcp(
     reader: asyncio.StreamReader,
     queue: "asyncio.Queue[bytes | None]",
 ) -> None:
-    """Drain TCP stream into queue as fast as possible.
-
-    Drops the oldest chunk when the queue is full so processing latency
-    stays bounded — for CW, a fresh chunk is always more useful than a
-    stale one that's been sitting in a buffer.
-    """
     try:
         while True:
             chunk = await reader.read(65536)
@@ -403,25 +307,24 @@ async def _drain_tcp(
                     queue.get_nowait()
                 queue.put_nowait(chunk)
     finally:
-        await queue.put(None)  # sentinel: tells consumer we're done
+        await queue.put(None)
 
 
 async def iq_reader(hub: Hub) -> None:
     loop = asyncio.get_running_loop()
 
     while True:
-        chain = CWSignalChain()
+        chain  = CWSignalChain()
         writer = None
         try:
-            log.info("Connecting to TCP mux at %s:%d…", MUX_HOST, MUX_PORT)
+            log.info("connecting to %s:%d…", MUX_HOST, MUX_PORT)
             reader, writer = await asyncio.open_connection(MUX_HOST, MUX_PORT)
             header = await reader.readexactly(12)
             if not header.startswith(b"RTL"):
-                raise ValueError(f"Unexpected header: {header!r}")
-            log.info("Connected to mux. Decoding CW on %.3f MHz…", CW_FREQ_HZ / 1e6)
+                raise ValueError(f"unexpected header: {header!r}")
+            log.info("connected — decoding CW on %.3f MHz", CW_FREQ_HZ / 1e6)
             await hub.set_connected(True)
 
-            # Bounded queue: 4 chunks max (~1 MB) keeps latency low.
             queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=4)
             drain_task = asyncio.create_task(_drain_tcp(reader, queue))
 
@@ -429,8 +332,6 @@ async def iq_reader(hub: Hub) -> None:
                 chunk = await queue.get()
                 if chunk is None:
                     break
-                # Offload CPU-heavy FIR processing to thread pool so the
-                # event loop stays free to keep draining the TCP stream.
                 events = await loop.run_in_executor(None, chain.process, chunk)
                 for ev in events:
                     await hub.broadcast(ev)
@@ -438,7 +339,7 @@ async def iq_reader(hub: Hub) -> None:
             drain_task.cancel()
 
         except Exception as e:
-            log.warning("Mux connection lost: %s, retrying in 5s…", e)
+            log.warning("mux connection lost: %s, retrying in 5s…", e)
         finally:
             if writer is not None:
                 with contextlib.suppress(Exception):
@@ -447,7 +348,6 @@ async def iq_reader(hub: Hub) -> None:
             await hub.set_connected(False)
         await asyncio.sleep(5)
 
-# ── HTTP / WebSocket server ────────────────────────────────────────────────────
 
 _level_map = {'log': log.info, 'info': log.info, 'warn': log.warning, 'error': log.error}
 
@@ -458,12 +358,10 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     await ws.prepare(request)
     hub.add(ws)
     await hub.send_status(ws)
-    # Rate-limit browser log processing: only emit once per LOG_THROTTLE_SEC per source
     _last_log: dict[str, float] = {}
     LOG_THROTTLE_SEC = 1.0
     try:
         async for msg in ws:
-            # Accept inbound log entries from the browser on this same socket.
             if msg.type == web.WSMsgType.TEXT:
                 try:
                     entries = json.loads(msg.data)
@@ -476,7 +374,6 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                         level  = str(entry.get('level', 'log'))
                         source = str(entry.get('source', 'browser'))
                         text   = str(entry.get('message', ''))
-                        # Only ship warn/error at full rate; throttle info/log
                         if level in ('log', 'info'):
                             key = f'{source}:{text[:40]}'
                             if now - _last_log.get(key, 0) < LOG_THROTTLE_SEC:
@@ -491,10 +388,6 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
 
 
 async def log_ws_handler(request: web.Request) -> web.WebSocketResponse:
-    """WebSocket endpoint for browser log shipping.
-    Clients send JSON arrays of log entries; we emit them via Python logger.
-    Using WebSocket avoids issues with HTTP POST interception on some networks.
-    """
     ws = web.WebSocketResponse()
     await ws.prepare(request)
     level_map = {'log': log.info, 'info': log.info, 'warn': log.warning, 'error': log.error}
@@ -509,16 +402,13 @@ async def log_ws_handler(request: web.Request) -> web.WebSocketResponse:
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue
-                level  = str(entry.get('level', 'log'))
-                source = str(entry.get('source', 'browser'))
-                text   = str(entry.get('message', ''))
-                emit   = level_map.get(level, log.info)
-                emit('[%s] %s', source, text)
+                level_map.get(str(entry.get('level', 'log')), log.info)(
+                    '[%s] %s', entry.get('source', 'browser'), entry.get('message', '')
+                )
     return ws
 
 
 async def supervised_iq_reader(hub: Hub) -> None:
-    """Wraps iq_reader so it always restarts if it crashes unexpectedly."""
     while True:
         try:
             await iq_reader(hub)
@@ -542,8 +432,8 @@ async def main() -> None:
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', WS_PORT)
     await site.start()
-    log.info("CW decoder WebSocket listening on :%d /ws/cw", WS_PORT)
-    await asyncio.Event().wait()   # run forever
+    log.info("CW decoder WebSocket on :%d /ws/cw", WS_PORT)
+    await asyncio.Event().wait()
 
 
 if __name__ == '__main__':
