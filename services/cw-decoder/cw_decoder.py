@@ -21,10 +21,9 @@ import asyncio
 import json
 import logging
 import os
-import socket
 import time
 from collections import deque
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
 from aiohttp import web
@@ -145,6 +144,9 @@ class CWSignalChain:
     # 10 seconds at 24 kHz = 240 000 samples → covers inter-character and word gaps.
     GATE_HOLD_SAMPLES = AUDIO_RATE * 10
 
+    # Log SNR diagnostics once per minute (every N threshold updates)
+    _LOG_INTERVAL = int(60 * AUDIO_RATE / max(THRESHOLD_UPDATE_INTERVAL, 1))
+
     def _update_threshold(self) -> None:
         """Recompute adaptive threshold from recent envelope history."""
         if len(self._window) < 20:
@@ -153,6 +155,18 @@ class CWSignalChain:
         p5  = float(np.percentile(arr, 5))
         p90 = float(np.percentile(arr, 90))
         spread = p90 - p5
+
+        # Periodic diagnostic so we can tune SNR parameters
+        self._log_ctr = getattr(self, '_log_ctr', 0) + 1
+        if self._log_ctr >= self._LOG_INTERVAL:
+            self._log_ctr = 0
+            snr_diag = p90 / max(p5, 1e-9)
+            log.info(
+                "SNR diag: p5=%.4f p90=%.4f ratio=%.2f gate=%s thr=%.4f",
+                p5, p90, snr_diag, "OPEN" if self._signal_present else "CLOSED",
+                self._threshold,
+            )
+
         if spread < 0.01 or p5 < 1e-9:
             # Countdown the hold timer; gate stays open while hold > 0
             if self._gate_hold_ctr > 0:
@@ -301,7 +315,7 @@ class MorseDecoder:
     def push_gap(self, duration: int, dit: int) -> list[dict]:
         events: list[dict] = []
         dits = duration / dit
-        ts   = datetime.now(timezone.utc).isoformat()
+        ts   = datetime.now(UTC).isoformat()
         if dits >= WORD_GAP_DITS:
             events.extend(self._flush(ts))
             events.append({'type': 'word_space', 'ts': ts})
