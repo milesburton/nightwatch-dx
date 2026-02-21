@@ -172,8 +172,12 @@ const sstvBuf2Im = new Float32Array(N2);
 let sstvBuf1Idx = 0;
 let sstvBuf2Idx = 0;
 
-let sstvLOPhase = 0;
 const sstvLOStep = (2 * Math.PI * SSTV_OFFSET_HZ) / SDR_SAMPLE_RATE;
+let sstvLORe = 1;
+let sstvLOIm = 0;
+const sstvLOStepRe = Math.cos(sstvLOStep);
+const sstvLOStepIm = -Math.sin(sstvLOStep);
+let sstvLONorm = 0;
 
 let sstvDecCount1 = 0;
 let sstvDecCount2 = 0;
@@ -187,10 +191,18 @@ let sstvAudioIdx = 0;
 const visDetector = new SSTVVISDetector(AUDIO_SAMPLE_RATE);
 
 function processSSTVSample(rawI: number, rawQ: number): void {
-  const loRe = Math.cos(sstvLOPhase);
-  const loIm = -Math.sin(sstvLOPhase);
-  sstvLOPhase += sstvLOStep;
-  if (sstvLOPhase > Math.PI) sstvLOPhase -= 2 * Math.PI;
+  const loRe = sstvLORe;
+  const loIm = sstvLOIm;
+  const nextRe = loRe * sstvLOStepRe - loIm * sstvLOStepIm;
+  const nextIm = loRe * sstvLOStepIm + loIm * sstvLOStepRe;
+  sstvLORe = nextRe;
+  sstvLOIm = nextIm;
+  if (++sstvLONorm >= 1000) {
+    const mag = Math.sqrt(sstvLORe * sstvLORe + sstvLOIm * sstvLOIm);
+    sstvLORe /= mag;
+    sstvLOIm /= mag;
+    sstvLONorm = 0;
+  }
 
   const mixI = rawI * loRe - rawQ * loIm;
   const mixQ = rawI * loIm + rawQ * loRe;
