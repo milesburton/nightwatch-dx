@@ -49,8 +49,8 @@ def kaiser_lowpass(cutoff: float, sample_rate: float, duration: float = 0.001, b
     return taps.astype(np.float32)
 
 
-_taps1 = kaiser_lowpass(INTERMEDIATE / 2, SDR_SAMPLE_RATE)
-_taps2 = kaiser_lowpass(AUDIO_RATE  / 2, INTERMEDIATE)
+_taps1 = kaiser_lowpass(AUDIO_RATE / 2, SDR_SAMPLE_RATE)
+_taps2 = kaiser_lowpass(AUDIO_RATE / 2, INTERMEDIATE)
 
 
 class LOOscillator:
