@@ -61,20 +61,35 @@ function useStarfield() {
 
 // A signal is considered "active" if we received something from it within
 // the last ACTIVE_TTL_MS milliseconds.
-const ACTIVE_TTL_MS = 10_000;
+const ACTIVE_TTL_MS  = 10_000;
+// Hardware is considered down if no FFT data for this long (rtl_tcp crashed/unplugged)
+const HW_TIMEOUT_MS  = 5_000;
 
 function useSignalStatus() {
   const [iqConnected,  setIqConnected]  = useState(false);
+  const [hwDown,       setHwDown]       = useState(false);
   const [cwActive,     setCwActive]     = useState(false);
   const [sstActive,    setSstActive]    = useState(false);
 
   const cwTimer  = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sstTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hwTimer  = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // IQ / spectrum connected state
+  // IQ / spectrum — track connection AND data flow
   useEffect(() => {
+    // Start the hardware watchdog immediately; it resets on every FFT
+    hwTimer.current = setTimeout(() => setHwDown(true), HW_TIMEOUT_MS);
+
     return addIQListener((msg) => {
-      if (msg.type === 'status') setIqConnected(msg.connected);
+      if (msg.type === 'status') {
+        setIqConnected(msg.connected);
+      }
+      if (msg.type === 'fft') {
+        // Data is flowing — hardware is up
+        setHwDown(false);
+        if (hwTimer.current) clearTimeout(hwTimer.current);
+        hwTimer.current = setTimeout(() => setHwDown(true), HW_TIMEOUT_MS);
+      }
     });
   }, []);
 
@@ -122,17 +137,20 @@ function useSignalStatus() {
     };
   }, []);
 
-  return { iqConnected, cwActive, sstActive };
+  return { iqConnected, hwDown, cwActive, sstActive };
 }
 
-function Subtitle({ iqConnected, cwActive, sstActive }: {
+function Subtitle({ iqConnected, hwDown, cwActive, sstActive }: {
   iqConnected: boolean;
+  hwDown: boolean;
   cwActive: boolean;
   sstActive: boolean;
 }) {
   const parts: string[] = [];
 
-  if (!iqConnected) {
+  if (hwDown) {
+    parts.push('SDR Hardware Offline');
+  } else if (!iqConnected) {
     parts.push('Connecting…');
   } else {
     parts.push('Scanning 20m');
@@ -146,9 +164,9 @@ function Subtitle({ iqConnected, cwActive, sstActive }: {
         <span key={part}>
           {i > 0 && <span className="text-white/25"> · </span>}
           <span className={
-            (part === 'CW Active' || part === 'SSTV Active')
-              ? 'text-emerald-400'
-              : undefined
+            part === 'SDR Hardware Offline' ? 'text-red-400' :
+            (part === 'CW Active' || part === 'SSTV Active') ? 'text-emerald-400' :
+            undefined
           }>
             {part}
           </span>
@@ -163,17 +181,35 @@ function Subtitle({ iqConnected, cwActive, sstActive }: {
 export default function App() {
   useStarfield();
   useVersionPoller();
-  const { iqConnected, cwActive, sstActive } = useSignalStatus();
+  const { iqConnected, hwDown, cwActive, sstActive } = useSignalStatus();
 
   return (
     <>
       <canvas id="stars-canvas" />
+
+      {/* Full-screen red overlay when SDR hardware is offline */}
+      {hwDown && (
+        <div
+          className="fixed inset-0 z-50 pointer-events-none"
+          style={{ background: 'rgba(220,38,38,0.15)', borderTop: '3px solid rgba(220,38,38,0.8)' }}
+          role="alert"
+          aria-live="assertive"
+        >
+          <div className="flex items-center justify-center gap-2 px-4 py-2"
+               style={{ background: 'rgba(220,38,38,0.75)' }}>
+            <span className="text-white font-bold text-sm tracking-wider uppercase">
+              ⚠ SDR Hardware Offline — check RTL-SDR USB connection on the N100
+            </span>
+          </div>
+        </div>
+      )}
+
       <div className="w-full max-w-7xl mx-auto px-6 py-10">
         <header className="text-center mb-10">
           <h1 className="text-5xl font-bold mb-3 tracking-tight text-white drop-shadow-lg">
             20m Signal Decoder
           </h1>
-          <Subtitle iqConnected={iqConnected} cwActive={cwActive} sstActive={sstActive} />
+          <Subtitle iqConnected={iqConnected} hwDown={hwDown} cwActive={cwActive} sstActive={sstActive} />
         </header>
 
         <main className="flex flex-col gap-6">
