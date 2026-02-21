@@ -16,13 +16,12 @@ Dockerfile CMD).  This script is the protocol-level multiplexer only.
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 import socket
-import struct
 import threading
 import time
-from collections import defaultdict
 
 import websockets
 
@@ -127,10 +126,8 @@ class Multiplexer:
             except (OSError, ConnectionResetError) as e:
                 log.warning("Upstream read error: %s, reconnecting…", e)
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     upstream.close()
-                except Exception:
-                    pass
             time.sleep(2)
 
     def handle_client(self, sock: socket.socket, addr) -> None:
@@ -144,10 +141,8 @@ class Multiplexer:
                 if not cmd:
                     break
                 if self._upstream:
-                    try:
+                    with contextlib.suppress(OSError):
                         self._upstream.sendall(cmd)
-                    except OSError:
-                        pass
         except (OSError, ConnectionResetError):
             pass
         finally:

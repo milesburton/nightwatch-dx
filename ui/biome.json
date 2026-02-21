@@ -1,6 +1,6 @@
 {
-  "$schema": "https://biomejs.dev/schemas/2.3.15/schema.json",
-  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "$schema": "https://biomejs.dev/schemas/2.3.13/schema.json",
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": false },
   "files": {
     "ignoreUnknown": false,
     "includes": ["**", "!**/node_modules", "!**/dist"]
@@ -18,7 +18,8 @@
     "rules": {
       "recommended": true,
       "suspicious": { "noExplicitAny": "error", "noVar": "error" },
-      "style": { "useConst": "error" }
+      "style": { "useConst": "error" },
+      "a11y": { "noStaticElementInteractions": "off" }
     }
   },
   "javascript": {

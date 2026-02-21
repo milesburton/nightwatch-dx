@@ -12,13 +12,11 @@ Run with:
     python -m pytest test_cw_roundtrip.py -v
 """
 
+import math
 import sys
 import types
-import math
-import struct
 
 import numpy as np
-import pytest
 
 # ---------------------------------------------------------------------------
 # Pull in the module under test.  cw_decoder.py imports aiohttp at module
@@ -42,14 +40,12 @@ except ImportError:
     sys.modules["aiohttp"] = aiohttp_stub
     sys.modules["aiohttp.web"] = web_stub
 
-import importlib
 import os
 
 # Add the service directory to the path so we can import cw_decoder.
 sys.path.insert(0, os.path.dirname(__file__))
 
 import cw_decoder as cwd  # noqa: E402  (after sys.path manipulation)
-
 
 # ---------------------------------------------------------------------------
 # Signal-generation helpers
@@ -218,10 +214,16 @@ class TestMorseDecoder:
         def gap(n): return md.push_gap(n, dit)
 
         # C = -.-. (dah dit dah dit)
-        tone(dit * 3); tone(dit); tone(dit * 3); tone(dit)
+        tone(dit * 3)
+        tone(dit)
+        tone(dit * 3)
+        tone(dit)
         gap(dit * 3)  # char gap → produces 'C'
         # Q = --.- (dah dah dit dah)
-        tone(dit * 3); tone(dit * 3); tone(dit); tone(dit * 3)
+        tone(dit * 3)
+        tone(dit * 3)
+        tone(dit)
+        tone(dit * 3)
         events = gap(dit * 7)  # word gap → produces 'Q'
 
         chars = [e['char'] for e in events if e['type'] == 'char']

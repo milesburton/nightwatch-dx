@@ -11,9 +11,9 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { listCWSessions, saveCWSession } from '../utils/db.js';
-import type { CWSession } from '../utils/db.js';
 import type { CWSocketMessage } from '../types.js';
+import type { CWSession } from '../utils/db.js';
+import { listCWSessions, saveCWSession } from '../utils/db.js';
 
 const SESSION_TIMEOUT_MS = 30_000;
 
@@ -26,11 +26,15 @@ function StatusDot({ live }: { live: boolean }) {
 }
 
 function formatTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return new Date(iso).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
 }
 
 function formatFreq(hz: number): string {
-  return (hz / 1e6).toFixed(3) + ' MHz';
+  return `${(hz / 1e6).toFixed(3)} MHz`;
 }
 
 export function CWLogPanel() {
@@ -44,11 +48,11 @@ export function CWLogPanel() {
   const [liveFreq, setLiveFreq] = useState<number>(14_029_000);
   const [liveStartTs, setLiveStartTs] = useState<string>('');
 
-  const liveTextRef  = useRef('');
-  const liveFreqRef  = useRef(14_029_000);
+  const liveTextRef = useRef('');
+  const liveFreqRef = useRef(14_029_000);
   const liveStartRef = useRef('');
-  const timerRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const bottomRef    = useRef<HTMLDivElement>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
 
   // ── Load persisted sessions on mount ───────────────────────────────────────
   useEffect(() => {
@@ -63,9 +67,9 @@ export function CWLogPanel() {
     if (!text) return;
     const session: CWSession = {
       startTs: liveStartRef.current,
-      endTs:   new Date().toISOString(),
+      endTs: new Date().toISOString(),
       text,
-      freqHz:  liveFreqRef.current,
+      freqHz: liveFreqRef.current,
     };
     saveCWSession(session).then(() => {
       setSessions((prev) => {
@@ -73,7 +77,7 @@ export function CWLogPanel() {
         return [withId, ...prev];
       });
     });
-    liveTextRef.current  = '';
+    liveTextRef.current = '';
     liveStartRef.current = '';
     setLiveText('');
     setLiveStartTs('');
@@ -104,8 +108,11 @@ export function CWLogPanel() {
       ws.onerror = () => ws?.close();
       ws.onmessage = (e: MessageEvent<string>) => {
         let msg: CWSocketMessage;
-        try { msg = JSON.parse(e.data) as CWSocketMessage; }
-        catch { return; }
+        try {
+          msg = JSON.parse(e.data) as CWSocketMessage;
+        } catch {
+          return;
+        }
 
         if (msg.type === 'status') {
           setConnected(msg.connected);
@@ -148,9 +155,8 @@ export function CWLogPanel() {
   }, [liveText, selectedId]);
 
   // ── Render helpers ──────────────────────────────────────────────────────────
-  const selectedSession = selectedId !== 'live'
-    ? sessions.find((s) => s.id === selectedId) ?? null
-    : null;
+  const selectedSession =
+    selectedId !== 'live' ? (sessions.find((s) => s.id === selectedId) ?? null) : null;
 
   const isLive = liveText.length > 0;
 
@@ -173,7 +179,6 @@ export function CWLogPanel() {
 
       {/* ── Master-detail body ── */}
       <div className="flex" style={{ minHeight: '400px', maxHeight: '60vh' }}>
-
         {/* ── Left: session list (35%) ── */}
         <div className="w-[35%] border-r border-white/10 overflow-y-auto flex-shrink-0">
           {/* Live session entry */}
@@ -190,11 +195,11 @@ export function CWLogPanel() {
                 <p className="text-[10px] text-white/30 font-mono">{formatTime(liveStartTs)}</p>
               )}
               {liveText && (
-                <p className="text-[10px] text-white/50 font-mono truncate mt-0.5">{liveText.slice(0, 30)}</p>
+                <p className="text-[10px] text-white/50 font-mono truncate mt-0.5">
+                  {liveText.slice(0, 30)}
+                </p>
               )}
-              {!liveText && (
-                <p className="text-[10px] text-white/20 italic">Waiting for signal…</p>
-              )}
+              {!liveText && <p className="text-[10px] text-white/20 italic">Waiting for signal…</p>}
             </div>
           </button>
 
@@ -203,7 +208,9 @@ export function CWLogPanel() {
             <button
               key={s.id}
               type="button"
-              onClick={() => setSelectedId(s.id!)}
+              onClick={() => {
+                if (s.id !== undefined) setSelectedId(s.id);
+              }}
               className={`w-full text-left px-4 py-3 border-b border-white/6 transition-colors flex items-start gap-2
                 ${selectedId === s.id ? 'bg-white/8' : 'hover:bg-white/4'}`}
             >
@@ -211,7 +218,9 @@ export function CWLogPanel() {
               <div className="min-w-0">
                 <p className="text-xs text-white/70 font-mono">{formatTime(s.startTs)}</p>
                 <p className="text-[10px] text-white/30 font-mono">{formatFreq(s.freqHz)}</p>
-                <p className="text-[10px] text-white/50 font-mono truncate mt-0.5">{s.text.slice(0, 30)}</p>
+                <p className="text-[10px] text-white/50 font-mono truncate mt-0.5">
+                  {s.text.slice(0, 30)}
+                </p>
               </div>
             </button>
           ))}

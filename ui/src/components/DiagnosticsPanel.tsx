@@ -8,12 +8,22 @@ interface Props {
 
 export function DiagnosticsPanel({ diagnostics }: Props) {
   const [open, setOpen] = useState(true);
-  const { mode, visCode, sampleRate, fileDuration, freqOffset, autoCalibrate, visEndPos, decodeTimeMs, quality } =
-    diagnostics;
+  const {
+    mode,
+    visCode,
+    sampleRate,
+    fileDuration,
+    freqOffset,
+    autoCalibrate,
+    visEndPos,
+    decodeTimeMs,
+    quality,
+  } = diagnostics;
 
   return (
     <div className="mt-4 border border-white/10 rounded-lg overflow-hidden text-xs">
       <button
+        type="button"
         className="w-full bg-white/[0.04] hover:bg-white/[0.07] border-none px-3 py-2.5 text-left text-xs font-semibold text-white/40 flex justify-between uppercase tracking-wider transition-colors"
         onClick={() => setOpen((o) => !o)}
       >
@@ -27,22 +37,30 @@ export function DiagnosticsPanel({ diagnostics }: Props) {
             <span className="font-mono text-white/65 break-all">{mode ?? '—'}</span>
             <span className="text-white/35 font-medium">VIS code</span>
             <span className="font-mono text-white/65">
-              {visCode != null ? `0x${visCode.toString(16).toUpperCase().padStart(2, '0')} (${visCode})` : '—'}
+              {visCode != null
+                ? `0x${visCode.toString(16).toUpperCase().padStart(2, '0')} (${visCode})`
+                : '—'}
             </span>
             <span className="text-white/35 font-medium">Sample rate</span>
             <span className="font-mono text-white/65">{sampleRate ? `${sampleRate} Hz` : '—'}</span>
             <span className="text-white/35 font-medium">File duration</span>
             <span className="font-mono text-white/65">{fileDuration ?? '—'}</span>
             <span className="text-white/35 font-medium">Freq offset</span>
-            <span className={`font-mono ${Math.abs(freqOffset) > 50 ? 'text-amber-400 font-semibold' : 'text-white/65'}`}>
+            <span
+              className={`font-mono ${Math.abs(freqOffset) > 50 ? 'text-amber-400 font-semibold' : 'text-white/65'}`}
+            >
               {freqOffset != null ? `${freqOffset > 0 ? '+' : ''}${freqOffset} Hz` : '—'}
             </span>
             <span className="text-white/35 font-medium">Auto-calibrate</span>
             <span className="font-mono text-white/65">{autoCalibrate ? 'on' : 'off'}</span>
             <span className="text-white/35 font-medium">VIS end pos</span>
-            <span className="font-mono text-white/65">{visEndPos != null ? `${visEndPos} samples` : '—'}</span>
+            <span className="font-mono text-white/65">
+              {visEndPos != null ? `${visEndPos} samples` : '—'}
+            </span>
             <span className="text-white/35 font-medium">Decode time</span>
-            <span className="font-mono text-white/65">{decodeTimeMs != null ? `${decodeTimeMs} ms` : '—'}</span>
+            <span className="font-mono text-white/65">
+              {decodeTimeMs != null ? `${decodeTimeMs} ms` : '—'}
+            </span>
           </div>
           {quality && (
             <>
@@ -65,8 +83,8 @@ export function DiagnosticsPanel({ diagnostics }: Props) {
               </div>
               {quality.warnings.length > 0 && (
                 <ul className="mt-2 p-2 bg-amber-500/10 border border-amber-500/20 rounded list-none">
-                  {quality.warnings.map((w, i) => (
-                    <li key={i} className="text-xs text-amber-300/80 leading-relaxed">
+                  {quality.warnings.map((w) => (
+                    <li key={w} className="text-xs text-amber-300/80 leading-relaxed">
                       {w}
                     </li>
                   ))}

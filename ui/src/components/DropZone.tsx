@@ -35,6 +35,7 @@ export function DropZone({ accept, onFile, processing, icon, hint, inputId, chil
 
   return (
     <section
+      aria-label="File drop zone"
       className={`border-2 border-dashed rounded-xl p-8 transition-all mb-4 min-h-50 flex flex-col justify-center ${
         dragActive
           ? 'border-[var(--color-primary)] bg-[rgba(124,140,248,0.06)] scale-[1.01]'

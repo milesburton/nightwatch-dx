@@ -5,16 +5,14 @@ Tests the Multiplexer class's thread-safe client management and
 broadcast logic without requiring actual network connections.
 """
 
-import sys
+import contextlib
 import os
 import socket
+import sys
 import threading
-import time
-import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'services', 'rtl-bridge'))
 import rtl_bridge as bridge
-
 
 # ── Multiplexer client management ─────────────────────────────────────────────
 
@@ -26,7 +24,8 @@ class TestMultiplexerClientManagement:
             mux.add_client(s1)
             assert len(mux._clients) == 1
         finally:
-            s1.close(); s2.close()
+            s1.close()
+            s2.close()
 
     def test_remove_client_decrements_count(self):
         mux = bridge.Multiplexer()
@@ -36,7 +35,8 @@ class TestMultiplexerClientManagement:
             mux.remove_client(s1)
             assert len(mux._clients) == 0
         finally:
-            s1.close(); s2.close()
+            s1.close()
+            s2.close()
 
     def test_remove_nonexistent_client_safe(self):
         mux = bridge.Multiplexer()
@@ -45,7 +45,8 @@ class TestMultiplexerClientManagement:
             # Should not raise
             mux.remove_client(s1)
         finally:
-            s1.close(); s2.close()
+            s1.close()
+            s2.close()
 
     def test_multiple_clients(self):
         mux = bridge.Multiplexer()
@@ -56,7 +57,8 @@ class TestMultiplexerClientManagement:
             assert len(mux._clients) == 5
         finally:
             for s1, s2 in pairs:
-                s1.close(); s2.close()
+                s1.close()
+                s2.close()
 
     def test_thread_safe_add_remove(self):
         """Concurrent adds/removes should not corrupt state."""
@@ -80,12 +82,15 @@ class TestMultiplexerClientManagement:
 
         t1 = threading.Thread(target=add_all)
         t2 = threading.Thread(target=remove_all)
-        t1.start(); t2.start()
-        t1.join(); t2.join()
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
 
         assert errors == [], f"Thread safety errors: {errors}"
         for s1, s2 in pairs:
-            s1.close(); s2.close()
+            s1.close()
+            s2.close()
 
 
 # ── Broadcast ─────────────────────────────────────────────────────────────────
@@ -107,7 +112,8 @@ class TestMultiplexerBroadcast:
             assert received == payload
 
         for s1, s2 in pairs:
-            s1.close(); s2.close()
+            s1.close()
+            s2.close()
 
     def test_broadcast_removes_dead_clients(self):
         mux = bridge.Multiplexer()
@@ -145,7 +151,8 @@ class TestMultiplexerBroadcast:
         received = live_r.recv(len(payload))
         assert received == payload
 
-        live_s.close(); live_r.close()
+        live_s.close()
+        live_r.close()
 
 
 # ── Magic header ──────────────────────────────────────────────────────────────
@@ -163,11 +170,8 @@ class TestMagicHeader:
         client_s, test_r = socket.socketpair()
 
         def run_handler():
-            # handle_client blocks reading commands; close after magic received
-            try:
+            with contextlib.suppress(Exception):
                 mux.handle_client(client_s, ('127.0.0.1', 9999))
-            except Exception:
-                pass
 
         t = threading.Thread(target=run_handler, daemon=True)
         t.start()

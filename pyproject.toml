@@ -1,0 +1,38 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["services", "tests"]
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "UP",  # pyupgrade
+  "B",   # flake8-bugbear
+  "SIM", # flake8-simplify
+]
+ignore = [
+  "E501",   # line too long — handled by formatter
+  "B008",   # function calls in default args (common in aiohttp)
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.11"
+strict = false
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_return_any = false
+files = ["services", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["services.cw-decoder.test_cw_roundtrip", "test_cw_roundtrip"]
+ignore_errors = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "strict"

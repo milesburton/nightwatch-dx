@@ -23,11 +23,11 @@ import io
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
-from PIL import Image
 from aiohttp import web
+from PIL import Image
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
@@ -321,8 +321,6 @@ def decode_robot36(audio: np.ndarray, sr: int) -> Image.Image:
     porch_s  = porch_ms / 1000
     luma_s   = luma_ms  / 1000
     chroma_s = chroma_ms / 1000
-    line_s   = sync_s + porch_s + luma_s + chroma_s
-
     pixels = np.zeros((lines, width, 3), dtype=np.uint8)
 
     # Find VIS end (1200 Hz start bit already consumed by VISDetector;
@@ -480,7 +478,7 @@ async def iq_reader(hub: Hub) -> None:
                         None, decode_image, frame_audio, vis_code, AUDIO_RATE
                     )
                     data_url = image_to_data_url(img)
-                    ts = datetime.now(timezone.utc).isoformat()
+                    ts = datetime.now(UTC).isoformat()
                     await hub.broadcast({
                         'type': 'frame',
                         'imageDataUrl': data_url,
