@@ -47,7 +47,7 @@ WPM             = 20
 DIT_SAMPLES     = round((60 / (50 * WPM)) * AUDIO_RATE)   # 1440 samples/dit
 
 # How often to recompute the adaptive threshold (every N audio samples)
-THRESHOLD_UPDATE_INTERVAL = DIT_SAMPLES // 4   # every 1/4 dit ≈ 15 ms
+THRESHOLD_UPDATE_INTERVAL = max(DIT_SAMPLES // 8, 50)   # every 1/8 dit ≈ 7.5 ms
 
 DECIMATE1       = 10
 DECIMATE2       = 10
@@ -124,6 +124,10 @@ class CWSignalChain:
         # Threshold is recomputed periodically (not every sample) to avoid chattering
         self._threshold       = 0.05
         self._threshold_ctr   = 0
+        # SNR gate: latch open when signal seen, hold for GATE_HOLD_SAMPLES after last detection
+        # Gate starts open so the first few seconds of data are always decoded
+        self._signal_present  = True
+        self._gate_hold_ctr   = 0        # counts down samples since last high-SNR observation
         # Schmitt-trigger hysteresis: 20% of threshold range
         self._hyst_frac       = 0.20
         # Morse state machine
@@ -133,18 +137,41 @@ class CWSignalChain:
         self._gap_start  = 0
         self._clock      = 0
 
+    # Minimum ratio of p90/p5 required to consider the signal worth decoding.
+    # Pure Gaussian noise after FIR decimation has p90/p5 ≈ 1.5–2.
+    # A real CW carrier above the noise floor gives p90/p5 >> 3.
+    MIN_SNR_RATIO = 3.5
+    # How long (in audio samples) to keep the gate open after last high-SNR detection.
+    # 10 seconds at 24 kHz = 240 000 samples → covers inter-character and word gaps.
+    GATE_HOLD_SAMPLES = AUDIO_RATE * 10
+
     def _update_threshold(self) -> None:
         """Recompute adaptive threshold from recent envelope history."""
-        if len(self._window) < 200:
+        if len(self._window) < 20:
             return
         arr = np.array(self._window)
         p5  = float(np.percentile(arr, 5))
         p90 = float(np.percentile(arr, 90))
         spread = p90 - p5
-        if spread < 0.02:
-            # Not enough signal variation — keep previous threshold
+        if spread < 0.01 or p5 < 1e-9:
+            # Countdown the hold timer; gate stays open while hold > 0
+            if self._gate_hold_ctr > 0:
+                self._gate_hold_ctr -= THRESHOLD_UPDATE_INTERVAL
+            else:
+                self._signal_present = False
             return
-        self._threshold = p5 + spread * 0.5
+        snr = p90 / max(p5, 1e-9)
+        if snr >= self.MIN_SNR_RATIO:
+            # Signal detected — open gate and reset hold timer
+            self._signal_present = True
+            self._gate_hold_ctr  = self.GATE_HOLD_SAMPLES
+            self._threshold = p5 + spread * 0.5
+        else:
+            # Below SNR — count down hold timer
+            if self._gate_hold_ctr > 0:
+                self._gate_hold_ctr -= THRESHOLD_UPDATE_INTERVAL
+            else:
+                self._signal_present = False
 
     def process(self, raw: bytes) -> list[dict]:
         """Process one chunk of uint8 IQ bytes. Returns list of CW events."""
@@ -200,18 +227,24 @@ class CWSignalChain:
                 high_thr = thr + hyst
                 low_thr  = max(thr - hyst, 0.001)
 
-            # Schmitt trigger with hysteresis
-            if not self._tone_on and v > high_thr:
-                if self._gap_start > 0:
-                    events.extend(self._morse.push_gap(
-                        self._clock - self._gap_start, DIT_SAMPLES
-                    ))
-                self._tone_on    = True
-                self._tone_start = self._clock
-            elif self._tone_on and v < low_thr:
-                self._morse.push_tone(self._clock - self._tone_start, DIT_SAMPLES)
-                self._tone_on  = False
-                self._gap_start = self._clock
+            # Schmitt trigger with hysteresis — only when SNR gate is open
+            if self._signal_present:
+                if not self._tone_on and v > high_thr:
+                    if self._gap_start > 0:
+                        events.extend(self._morse.push_gap(
+                            self._clock - self._gap_start, DIT_SAMPLES
+                        ))
+                    self._tone_on    = True
+                    self._tone_start = self._clock
+                elif self._tone_on and v < low_thr:
+                    self._morse.push_tone(self._clock - self._tone_start, DIT_SAMPLES)
+                    self._tone_on  = False
+                    self._gap_start = self._clock
+            elif self._tone_on:
+                # Signal dropped below SNR gate while tone was active — reset state
+                self._tone_on   = False
+                self._gap_start = 0
+                self._morse     = MorseDecoder()   # discard partial character
             self._clock += 1
 
         return events
