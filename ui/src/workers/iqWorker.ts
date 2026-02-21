@@ -1,4 +1,7 @@
 import type { IQWorkerMessage } from '../types.js';
+import { initLogShipper } from '../utils/logShipper.js';
+
+initLogShipper('iqWorker');
 
 const SDR_SAMPLE_RATE = 2_400_000;
 const SDR_CENTER_HZ = 139_175_000;

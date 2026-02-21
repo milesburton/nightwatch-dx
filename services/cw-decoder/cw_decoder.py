@@ -314,11 +314,32 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     return ws
 
 
+async def log_handler(request: web.Request) -> web.Response:
+    """Receive browser log entries and emit them via the Python logger."""
+    try:
+        entries = await request.json()
+    except Exception:
+        return web.Response(status=400)
+    if not isinstance(entries, list):
+        entries = [entries]
+    level_map = {'log': log.info, 'info': log.info, 'warn': log.warning, 'error': log.error}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        level  = str(entry.get('level', 'log'))
+        source = str(entry.get('source', 'browser'))
+        msg    = str(entry.get('message', ''))
+        emit   = level_map.get(level, log.info)
+        emit('[%s] %s', source, msg)
+    return web.Response(status=204)
+
+
 async def main() -> None:
     hub = Hub()
     app = web.Application()
     app['hub'] = hub
     app.router.add_get('/ws/cw', ws_handler)
+    app.router.add_post('/api/logs', log_handler)
 
     asyncio.create_task(iq_reader(hub))
 
