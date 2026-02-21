@@ -1,6 +1,10 @@
 /**
- * logShipper — intercepts console.log/warn/error and batches them to
- * POST /api/logs so they appear in `docker compose logs cw-decoder`.
+ * logShipper — intercepts console.log/warn/error and batches them over the
+ * /ws/cw WebSocket so they appear in `docker compose logs cw-decoder`.
+ *
+ * Piggybacking on /ws/cw (rather than a dedicated endpoint) works around
+ * network intermediaries that intercept POST requests or unknown WS paths.
+ * The cw-decoder ws_handler accepts inbound JSON log arrays on that socket.
  *
  * Call initLogShipper() once from main.tsx (main thread) and once from
  * each Web Worker that should ship logs.
@@ -18,23 +22,38 @@ interface LogEntry {
 
 const FLUSH_INTERVAL_MS = 1_000;
 const FLUSH_ON_ERROR    = true;
-const ENDPOINT          = '/api/logs';
 
-let _buffer:  LogEntry[] = [];
-let _source   = 'browser';
-let _active   = false;
+const _buffer: LogEntry[] = [];
+let _source  = 'browser';
+let _active  = false;
+const _conn  = { ws: null as WebSocket | null };
 
-async function flush(): Promise<void> {
+function wsUrl(): string {
+  const proto = (typeof location !== 'undefined' && location.protocol === 'https:') ? 'wss' : 'ws';
+  const host  = typeof location !== 'undefined' ? location.host : 'localhost:8080';
+  return `${proto}://${host}/ws/cw`;
+}
+
+function openWs(): void {
+  try {
+    const ws = new WebSocket(wsUrl());
+    ws.onclose = () => { _conn.ws = null; setTimeout(openWs, 5_000); };
+    ws.onerror = () => { /* ignore */ };
+    _conn.ws = ws;
+  } catch {
+    _conn.ws = null;
+    setTimeout(openWs, 5_000);
+  }
+}
+
+function flush(): void {
   if (_buffer.length === 0) return;
+  if (_conn.ws?.readyState !== WebSocket.OPEN) return;
   const batch = _buffer.splice(0);
   try {
-    await fetch(ENDPOINT, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(batch),
-    });
+    _conn.ws.send(JSON.stringify(batch));
   } catch {
-    // Network error — drop silently rather than recursive-log
+    // Drop silently — socket may have closed between readyState check and send
   }
 }
 
@@ -58,13 +77,13 @@ function ship(level: LogEntry['level'], args: unknown[]): void {
  * Initialise log shipping for the current JS context.
  *
  * @param source  Label added to every entry, e.g. 'iqWorker' or 'browser'.
- *                The prefix already present in messages (e.g. "[iqWorker]")
- *                is kept as-is so filtering by source or by text both work.
  */
 export function initLogShipper(source = 'browser'): void {
   if (_active) return;
   _active = true;
   _source = source;
+
+  openWs();
 
   const orig = {
     log:   console.log.bind(console),
@@ -80,7 +99,6 @@ export function initLogShipper(source = 'browser'): void {
 
   setInterval(flush, FLUSH_INTERVAL_MS);
 
-  // Flush on page/worker close
   if (typeof self !== 'undefined') {
     self.addEventListener('unload', () => flush());
   }

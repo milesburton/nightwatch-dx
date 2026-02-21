@@ -12,7 +12,10 @@ const RF_CENTER_HZ = SDR_CENTER_HZ - LO_OFFSET_HZ;
 // ── Waterfall FFT ─────────────────────────────────────────────────────────────
 
 const FFT_SIZE = 1024;
-const FFT_AVERAGES = 50;
+const FFT_AVERAGES = 3;
+// Stride: compute a new FFT window every N new IQ samples.
+// 1024/4 = 256 → ~4× overlap → ~144 FFTs/sec at 2.4 Msps / 65536 bytes/msg
+const FFT_STRIDE = FFT_SIZE >> 2;
 
 const hannWindow = new Float32Array(FFT_SIZE);
 for (let i = 0; i < FFT_SIZE; i++) {
@@ -22,9 +25,11 @@ for (let i = 0; i < FFT_SIZE; i++) {
 const fftAccum = new Float32Array(FFT_SIZE).fill(0);
 let fftFrameCount = 0;
 
+// Ring buffer holds FFT_SIZE IQ pairs (2 floats each)
 const iqBuf = new Float32Array(FFT_SIZE * 2).fill(0);
-let iqBufIdx = 0;
-let iqBufFilled = 0;
+let iqBufIdx = 0;       // write head (in IQ pairs)
+let iqBufFilled = 0;    // how many pairs are valid
+let strideCount = 0;    // samples since last FFT trigger
 
 function fftPower(re: Float32Array, im: Float32Array): Float32Array {
   const n = re.length;
@@ -78,31 +83,30 @@ function processFFT(raw: Uint8Array): void {
     iqBuf[iqBufIdx * 2 + 1] = (raw[i + 1] - 127.5) / 127.5;
     iqBufIdx = (iqBufIdx + 1) % FFT_SIZE;
     if (iqBufFilled < FFT_SIZE) iqBufFilled++;
-  }
+    if (iqBufFilled < FFT_SIZE) continue;
 
-  if (iqBufFilled < FFT_SIZE) return;
+    strideCount++;
+    if (strideCount < FFT_STRIDE) continue;
+    strideCount = 0;
 
-  const re = new Float32Array(FFT_SIZE);
-  const im = new Float32Array(FFT_SIZE);
-  for (let i = 0; i < FFT_SIZE; i++) {
-    const idx = (iqBufIdx + i) % FFT_SIZE;
-    re[i] = iqBuf[idx * 2]     * hannWindow[i];
-    im[i] = iqBuf[idx * 2 + 1] * hannWindow[i];
-  }
+    const re = new Float32Array(FFT_SIZE);
+    const im = new Float32Array(FFT_SIZE);
+    for (let k = 0; k < FFT_SIZE; k++) {
+      const idx = (iqBufIdx + k) % FFT_SIZE;
+      re[k] = iqBuf[idx * 2]     * hannWindow[k];
+      im[k] = iqBuf[idx * 2 + 1] * hannWindow[k];
+    }
 
-  const power = fftPower(re, im);
-  for (let i = 0; i < FFT_SIZE; i++) fftAccum[i] += power[i];
-  fftFrameCount++;
+    const power = fftPower(re, im);
+    for (let k = 0; k < FFT_SIZE; k++) fftAccum[k] += power[k];
+    fftFrameCount++;
 
-  if (fftFrameCount >= FFT_AVERAGES) {
-    const bins = Array.from(fftAccum, (v) => v / FFT_AVERAGES);
-    fftFrameCount = 0;
-    fftAccum.fill(0);
-    // Diagnostic: log dB range on first few FFTs so we can calibrate the display
-    const minDb = Math.min(...bins);
-    const maxDb = Math.max(...bins);
-    console.log(`[iqWorker] FFT posted: min=${minDb.toFixed(1)} dB  max=${maxDb.toFixed(1)} dB`);
-    self.postMessage({ type: 'fft', bins, centerFreq: RF_CENTER_HZ, sampleRate: SDR_SAMPLE_RATE } as IQWorkerMessage);
+    if (fftFrameCount >= FFT_AVERAGES) {
+      const bins = Array.from(fftAccum, (v) => v / FFT_AVERAGES);
+      fftFrameCount = 0;
+      fftAccum.fill(0);
+      self.postMessage({ type: 'fft', bins, centerFreq: RF_CENTER_HZ, sampleRate: SDR_SAMPLE_RATE } as IQWorkerMessage);
+    }
   }
 }
 

@@ -300,6 +300,9 @@ async def iq_reader(hub: Hub) -> None:
 
 # ── HTTP / WebSocket server ────────────────────────────────────────────────────
 
+_level_map = {'log': log.info, 'info': log.info, 'warn': log.warning, 'error': log.error}
+
+
 async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     hub: Hub = request.app['hub']
     ws = web.WebSocketResponse()
@@ -307,31 +310,52 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     hub.add(ws)
     await hub.send_status(ws)
     try:
-        async for _ in ws:
-            pass   # clients only receive
+        async for msg in ws:
+            # Accept inbound log entries from the browser on this same socket.
+            if msg.type == web.WSMsgType.TEXT:
+                try:
+                    entries = json.loads(msg.data)
+                    if not isinstance(entries, list):
+                        entries = [entries]
+                    for entry in entries:
+                        if not isinstance(entry, dict):
+                            continue
+                        level  = str(entry.get('level', 'log'))
+                        source = str(entry.get('source', 'browser'))
+                        text   = str(entry.get('message', ''))
+                        _level_map.get(level, log.info)('[%s] %s', source, text)
+                except Exception:
+                    pass
     finally:
         hub.remove(ws)
     return ws
 
 
-async def log_handler(request: web.Request) -> web.Response:
-    """Receive browser log entries and emit them via the Python logger."""
-    try:
-        entries = await request.json()
-    except Exception:
-        return web.Response(status=400)
-    if not isinstance(entries, list):
-        entries = [entries]
+async def log_ws_handler(request: web.Request) -> web.WebSocketResponse:
+    """WebSocket endpoint for browser log shipping.
+    Clients send JSON arrays of log entries; we emit them via Python logger.
+    Using WebSocket avoids issues with HTTP POST interception on some networks.
+    """
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
     level_map = {'log': log.info, 'info': log.info, 'warn': log.warning, 'error': log.error}
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        level  = str(entry.get('level', 'log'))
-        source = str(entry.get('source', 'browser'))
-        msg    = str(entry.get('message', ''))
-        emit   = level_map.get(level, log.info)
-        emit('[%s] %s', source, msg)
-    return web.Response(status=204)
+    async for msg in ws:
+        if msg.type == web.WSMsgType.TEXT:
+            try:
+                entries = json.loads(msg.data)
+            except Exception:
+                continue
+            if not isinstance(entries, list):
+                entries = [entries]
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                level  = str(entry.get('level', 'log'))
+                source = str(entry.get('source', 'browser'))
+                text   = str(entry.get('message', ''))
+                emit   = level_map.get(level, log.info)
+                emit('[%s] %s', source, text)
+    return ws
 
 
 async def main() -> None:
@@ -339,7 +363,7 @@ async def main() -> None:
     app = web.Application()
     app['hub'] = hub
     app.router.add_get('/ws/cw', ws_handler)
-    app.router.add_post('/api/logs', log_handler)
+    app.router.add_get('/ws/logs', log_ws_handler)
 
     asyncio.create_task(iq_reader(hub))
 

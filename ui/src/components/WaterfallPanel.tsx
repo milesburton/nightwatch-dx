@@ -60,7 +60,7 @@ function freqToX(freqHz: number, centerHz: number, sampleRate: number, width: nu
 }
 
 const SPECTRUM_HEIGHT = 80;
-const WATERFALL_ROWS  = 200;
+const WATERFALL_ROWS  = 400;
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -271,7 +271,7 @@ export function WaterfallPanel() {
       <canvas
         ref={wfCanvasRef}
         className="w-full block rounded-b-lg"
-        style={{ height: `${WATERFALL_ROWS}px`, imageRendering: 'pixelated' }}
+        style={{ height: `${WATERFALL_ROWS}px`, imageRendering: 'pixelated', minHeight: `${WATERFALL_ROWS}px` }}
       />
 
       {!connected && (
