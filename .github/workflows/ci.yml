@@ -94,8 +94,6 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Pull and restart services
-      working-directory: /home/miles/gmktec-sdr-project
+    - name: Deploy services
       run: |
-        git pull
-        docker compose up -d --build
+        docker compose up -d --build --remove-orphans
