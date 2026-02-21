@@ -1,9 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { CWSocketMessage } from '../types.js';
+import type { IQWorkerMessage } from '../types.js';
 
-// nginx proxies /ws/cw → cw-decoder:8765; vite dev proxy also maps this path
-const WS_PROTO = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-const WS_URL = `${WS_PROTO}//${window.location.host}/ws/cw`;
 const MAX_LINES = 200;
 
 interface Line {
@@ -11,7 +8,6 @@ interface Line {
   ts: string;
   text: string;
   freq: number;
-  power: number;
 }
 
 function StatusDot({ connected }: { connected: boolean }) {
@@ -23,75 +19,79 @@ function StatusDot({ connected }: { connected: boolean }) {
   );
 }
 
+// IQ worker singleton shared across CWPanel and WaterfallPanel mounts
+// (exported so WaterfallPanel can attach its own listener)
+let _worker: Worker | null = null;
+const _listeners = new Set<(msg: IQWorkerMessage) => void>();
+
+function getIQWorker(): Worker {
+  if (!_worker) {
+    _worker = new Worker(new URL('../workers/iqWorker.ts', import.meta.url), { type: 'module' });
+    _worker.onmessage = (e: MessageEvent<IQWorkerMessage>) => {
+      for (const fn of _listeners) fn(e.data);
+    };
+  }
+  return _worker;
+}
+
+export function addIQListener(fn: (msg: IQWorkerMessage) => void): () => void {
+  getIQWorker();   // ensure worker is started
+  _listeners.add(fn);
+  return () => _listeners.delete(fn);
+}
+
 export function CWPanel() {
   const [lines, setLines] = useState<Line[]>([]);
   const [currentLine, setCurrentLine] = useState('');
   const [connected, setConnected] = useState(false);
   const [statusFreq, setStatusFreq] = useState<number | null>(null);
-  const [statusPower, setStatusPower] = useState<number | null>(null);
   const lineId = useRef(0);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const currentLineRef = useRef('');
+  const currentTsRef = useRef('');
 
-  const finishLine = useCallback((text: string, ts: string, freq: number, power: number) => {
+  const flushLine = useCallback(() => {
+    const text = currentLineRef.current;
+    const ts   = currentTsRef.current;
     if (!text.trim()) return;
     setLines((prev) => {
-      const next = [...prev, { id: lineId.current++, ts, text, freq, power }];
+      const next = [...prev, { id: lineId.current++, ts, text, freq: 0 }];
       return next.length > MAX_LINES ? next.slice(next.length - MAX_LINES) : next;
     });
+    currentLineRef.current = '';
+    currentTsRef.current   = '';
     setCurrentLine('');
   }, []);
 
   useEffect(() => {
-    let reconnectTimer: ReturnType<typeof setTimeout>;
+    const unsub = addIQListener((msg) => {
+      if (msg.type === 'status') {
+        setConnected(msg.connected);
+        setStatusFreq(msg.centerFreq);
+      } else if (msg.type === 'cw_char') {
+        setStatusFreq(msg.freq);
+        if (!currentTsRef.current) currentTsRef.current = msg.ts;
+        currentLineRef.current += msg.char;
+        setCurrentLine(currentLineRef.current);
+      } else if (msg.type === 'cw_word_space') {
+        currentLineRef.current += ' ';
+        setCurrentLine(currentLineRef.current);
+        // Flush to a completed line after a word boundary
+        if (currentLineRef.current.trim().length > 60) flushLine();
+      }
+    });
+    return unsub;
+  }, [flushLine]);
 
-    const connect = () => {
-      const ws = new WebSocket(WS_URL);
-      wsRef.current = ws;
-
-      ws.onopen = () => setConnected(true);
-      ws.onclose = () => {
-        setConnected(false);
-        reconnectTimer = setTimeout(connect, 3000);
-      };
-      ws.onerror = () => ws.close();
-
-      ws.onmessage = (event: MessageEvent<string>) => {
-        let msg: CWSocketMessage;
-        try {
-          msg = JSON.parse(event.data) as CWSocketMessage;
-        } catch {
-          return;
-        }
-
-        if (msg.type === 'char') {
-          setStatusFreq(msg.freq);
-          setStatusPower(msg.power);
-          setCurrentLine((prev) => prev + msg.char);
-        } else if (msg.type === 'word_space') {
-          setCurrentLine((prev) => prev + ' ');
-        } else if (msg.type === 'status') {
-          setConnected(msg.connected);
-          setStatusFreq(msg.freq);
-        }
-      };
-    };
-
-    connect();
-    return () => {
-      clearTimeout(reconnectTimer);
-      wsRef.current?.close();
-    };
-  }, [finishLine]);
-
-  // Auto-scroll to bottom
+  // Auto-scroll to bottom whenever output changes
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [lines, currentLine]);
+  });
 
   const clearAll = () => {
     setLines([]);
     setCurrentLine('');
+    currentLineRef.current = '';
   };
 
   return (
@@ -103,18 +103,14 @@ export function CWPanel() {
           <p className="text-white/40 text-xs mt-0.5 font-mono">
             <StatusDot connected={connected} />
             {connected ? (
-              <>
-                {statusFreq != null && <span>{(statusFreq / 1e6).toFixed(4)} MHz</span>}
-                {statusPower != null && (
-                  <span className="ml-2 text-white/25">{statusPower.toFixed(1)} dB</span>
-                )}
-              </>
+              statusFreq != null && <span>{(statusFreq / 1e6).toFixed(4)} MHz</span>
             ) : (
-              <span className="text-red-400/80">Reconnecting…</span>
+              <span className="text-red-400/80">Connecting to IQ stream…</span>
             )}
           </p>
         </div>
         <button
+          type="button"
           onClick={clearAll}
           className="text-xs text-white/30 hover:text-white/60 transition-colors px-2 py-1 rounded border border-white/10 hover:border-white/20"
         >

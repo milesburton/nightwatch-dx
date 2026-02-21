@@ -16,7 +16,7 @@ self.onmessage = (event: MessageEvent<WorkerDecodeRequest>) => {
       diagnostics: result.diagnostics,
     };
 
-    self.postMessage(msg, [result.pixels.buffer]);
+    self.postMessage(msg, { transfer: [result.pixels.buffer] });
   } catch (err) {
     const msg: WorkerOutboundMessage = {
       type: 'error',

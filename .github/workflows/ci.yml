@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    name: Python tests
+    name: Python tests (rtl-bridge)
     runs-on: ubuntu-latest
 
     steps:
@@ -35,10 +35,36 @@ jobs:
         file: ./coverage.xml
         fail_ci_if_error: false
 
+  ui-test:
+    name: UI build + type-check
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: "22"
+        cache: "npm"
+        cache-dependency-path: ui/package-lock.json
+
+    - name: Install UI dependencies
+      working-directory: ui
+      run: npm ci
+
+    - name: Type-check
+      working-directory: ui
+      run: npx tsc --noEmit
+
+    - name: Build
+      working-directory: ui
+      run: npm run build
+
   docker:
     name: Docker build
     runs-on: ubuntu-latest
-    needs: test
+    needs: [test, ui-test]
 
     steps:
     - uses: actions/checkout@v4
@@ -51,15 +77,6 @@ jobs:
 
     - name: Build rtl-bridge
       run: docker compose build rtl-bridge
-
-    - name: Build cw-decoder
-      run: docker compose build cw-decoder
-
-    - name: Build sstv-decoder
-      run: docker compose build sstv-decoder
-
-    - name: Build spectrum
-      run: docker compose build spectrum
 
     - name: Build ui
       run: docker compose build ui

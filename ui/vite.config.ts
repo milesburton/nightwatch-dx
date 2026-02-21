@@ -12,9 +12,7 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/ws/cw': { target: 'ws://localhost:8765', ws: true },
-      '/ws/sstv': { target: 'ws://localhost:8766', ws: true },
-      '/ws/spectrum': { target: 'ws://localhost:8767', ws: true },
+      '/ws/iq': { target: 'ws://localhost:1236', ws: true },
     },
   },
 });
