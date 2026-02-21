@@ -1,5 +1,8 @@
 FROM node:22-slim AS builder
 
+ARG APP_VERSION=v0.0.0
+ENV APP_VERSION=${APP_VERSION}
+
 WORKDIR /app
 COPY ui/package*.json ./
 RUN npm install

@@ -3,10 +3,10 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
 
-// Derive version from nearest git tag: e.g. "v1.0.0" on the tag itself,
-// "v1.0.0-3-gabcdef" for commits after the tag.
-// Falls back to "v0.0.0" if git is unavailable (e.g. shallow clone).
+// Derive version from $APP_VERSION env var (set by Docker build arg),
+// falling back to `git describe` for local dev builds.
 function gitVersion(): string {
+  if (process.env.APP_VERSION) return process.env.APP_VERSION;
   try {
     return execSync('git describe --tags --always', { encoding: 'utf8' }).trim();
   } catch {
