@@ -83,7 +83,6 @@ export function WaterfallPanel() {
       if (msg.type !== 'fft') return;
 
       const { bins, centerFreq: cf, sampleRate: sr } = msg;
-      console.log(`[WaterfallPanel] FFT received: ${bins.length} bins, cf=${cf}, sr=${sr}`);
       setCenterFreq(cf);
       setSampleRate(sr);
 
@@ -93,10 +92,8 @@ export function WaterfallPanel() {
 
       // If the container hasn't been measured yet, size the canvases now.
       let W = wfCanvas.width;
-      console.log(`[WaterfallPanel] canvas width=${W}, spec.width=${specCanvas.width}`);
       if (W === 0) {
         const containerW = Math.floor(wfCanvas.getBoundingClientRect().width);
-        console.log(`[WaterfallPanel] resizing canvas to ${containerW}px`);
         if (containerW === 0) return;
         W = containerW;
         specCanvas.width  = containerW;

@@ -362,6 +362,9 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     await ws.prepare(request)
     hub.add(ws)
     await hub.send_status(ws)
+    # Rate-limit browser log processing: only emit once per LOG_THROTTLE_SEC per source
+    _last_log: dict[str, float] = {}
+    LOG_THROTTLE_SEC = 1.0
     try:
         async for msg in ws:
             # Accept inbound log entries from the browser on this same socket.
@@ -370,12 +373,19 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                     entries = json.loads(msg.data)
                     if not isinstance(entries, list):
                         entries = [entries]
+                    now = time.monotonic()
                     for entry in entries:
                         if not isinstance(entry, dict):
                             continue
                         level  = str(entry.get('level', 'log'))
                         source = str(entry.get('source', 'browser'))
                         text   = str(entry.get('message', ''))
+                        # Only ship warn/error at full rate; throttle info/log
+                        if level in ('log', 'info'):
+                            key = f'{source}:{text[:40]}'
+                            if now - _last_log.get(key, 0) < LOG_THROTTLE_SEC:
+                                continue
+                            _last_log[key] = now
                         _level_map.get(level, log.info)('[%s] %s', source, text)
                 except Exception:
                     pass
@@ -411,6 +421,18 @@ async def log_ws_handler(request: web.Request) -> web.WebSocketResponse:
     return ws
 
 
+async def supervised_iq_reader(hub: Hub) -> None:
+    """Wraps iq_reader so it always restarts if it crashes unexpectedly."""
+    while True:
+        try:
+            await iq_reader(hub)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            log.error("iq_reader crashed: %s — restarting in 5s", e)
+            await asyncio.sleep(5)
+
+
 async def main() -> None:
     hub = Hub()
     app = web.Application()
@@ -418,7 +440,7 @@ async def main() -> None:
     app.router.add_get('/ws/cw', ws_handler)
     app.router.add_get('/ws/logs', log_ws_handler)
 
-    asyncio.create_task(iq_reader(hub))
+    asyncio.create_task(supervised_iq_reader(hub))
 
     runner = web.AppRunner(app)
     await runner.setup()
