@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { CWLogPanel } from './components/CWLogPanel.js';
 import { SSTVGalleryPanel } from './components/SSTVGalleryPanel.js';
 import { WaterfallPanel } from './components/WaterfallPanel.js';
+import { useVersionPoller } from './utils/useVersionPoller.js';
 
 function useStarfield() {
   useEffect(() => {
@@ -54,6 +55,7 @@ function useStarfield() {
 
 export default function App() {
   useStarfield();
+  useVersionPoller();
 
   return (
     <>
