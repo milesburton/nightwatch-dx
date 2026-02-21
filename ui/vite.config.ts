@@ -3,14 +3,14 @@ import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
 import { defineConfig, type Plugin } from 'vite';
 
-// Derive version from git: 1.0.<commit-count>  e.g. 1.0.42
-// Falls back to 1.0.0 if git is unavailable (e.g. fresh Docker layer).
+// Derive version from nearest git tag: e.g. "v1.0.0" on the tag itself,
+// "v1.0.0-3-gabcdef" for commits after the tag.
+// Falls back to "v0.0.0" if git is unavailable (e.g. shallow clone).
 function gitVersion(): string {
   try {
-    const count = execSync('git rev-list --count HEAD', { encoding: 'utf8' }).trim();
-    return `1.0.${count}`;
+    return execSync('git describe --tags --always', { encoding: 'utf8' }).trim();
   } catch {
-    return '1.0.0';
+    return 'v0.0.0';
   }
 }
 

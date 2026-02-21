@@ -68,9 +68,6 @@ export default function App() {
           <p className="text-sm text-white/50 tracking-widest uppercase font-medium">
             Live CW &amp; SSTV · 20m · RTL-SDR
           </p>
-          <p className="text-white/30 text-xs mt-1">
-            v{__APP_VERSION__} · {__BUILD_DATE__}
-          </p>
         </header>
 
         <main className="flex flex-col gap-6">
@@ -84,19 +81,20 @@ export default function App() {
           <SSTVGalleryPanel />
         </main>
 
-        <footer className="text-center text-white/40 py-6 text-sm mt-6">
-          <a
-            href="https://github.com/milesburton/gmktec-sdr-project"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-white/60 hover:text-white transition-colors font-medium"
-          >
-            View on GitHub
-          </a>
-          {' · '}
-          <span>v{__APP_VERSION__}</span>
-          {' · '}
-          <span>Build {__BUILD_DATE__}</span>
+        <footer className="text-center text-white/40 py-6 text-sm mt-6 space-y-1">
+          <div className="font-mono text-white/60 text-xs tracking-wider">
+            {__APP_VERSION__} &nbsp;·&nbsp; {__BUILD_DATE__}
+          </div>
+          <div>
+            <a
+              href="https://github.com/milesburton/gmktec-sdr-project"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-white/40 hover:text-white/70 transition-colors"
+            >
+              milesburton/gmktec-sdr-project
+            </a>
+          </div>
         </footer>
       </div>
     </>
