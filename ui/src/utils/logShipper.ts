@@ -32,8 +32,6 @@ async function flush(): Promise<void> {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify(batch),
-      // keepalive so the request survives page unload
-      keepalive: true,
     });
   } catch {
     // Network error — drop silently rather than recursive-log
