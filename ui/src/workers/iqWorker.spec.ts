@@ -110,8 +110,8 @@ function simulateProcessFFT(chunks: Uint8Array[]): number {
 
 // ── Waterfall colour LUT (duplicated from WaterfallPanel.tsx) ────────────────
 
-const DB_MIN   = -100;
-const DB_MAX   = -50;
+const DB_MIN   = -110;
+const DB_MAX   = -30;
 const DB_RANGE = DB_MAX - DB_MIN;
 
 function dbToLutIndex(db: number): number {
@@ -159,17 +159,18 @@ describe('FFT processing rate', () => {
 });
 
 describe('Waterfall dB → colour mapping', () => {
-  it('maps hardware noise floor (-84 dB) to a visible non-zero colour index', () => {
-    const idx = dbToLutIndex(-84);
-    // -84 is within [-100, -50], so index = round((-84 - -100) / 50 * 255) = round(16/50*255) = 82
-    expect(idx).toBe(82);
+  // DB range is now -110 to -30 (80 dB span)
+  it('maps hardware noise floor (-75 dB) to a visible non-zero colour index', () => {
+    const idx = dbToLutIndex(-75);
+    // -75 within [-110,-30]: index = round((-75 - -110) / 80 * 255) = round(35/80*255) = round(111.6) = 112
+    expect(idx).toBe(112);
     expect(idx).toBeGreaterThan(0);  // not black
   });
 
-  it('maps strong signal (-64 dB) to a bright colour index', () => {
-    const idx = dbToLutIndex(-64);
-    // round((-64 - -100) / 50 * 255) = round(36/50*255) = round(183.6) = 184
-    expect(idx).toBe(184);
+  it('maps strong signal (-45 dB) to a bright colour index', () => {
+    const idx = dbToLutIndex(-45);
+    // round((-45 - -110) / 80 * 255) = round(65/80*255) = round(207.2) = 207
+    expect(idx).toBe(207);
     expect(idx).toBeGreaterThan(128);  // bright, above midpoint
   });
 
@@ -182,7 +183,7 @@ describe('Waterfall dB → colour mapping', () => {
   });
 
   it('noise floor at -84 dB produces opaque blue (not black)', () => {
-    // Build the LUT inline
+    // Build the LUT inline (matches WaterfallPanel.tsx buildColorLut)
     const lut = new Uint8ClampedArray(256 * 4);
     for (let i = 0; i < 256; i++) {
       let r = 0, g = 0, b = 0;
@@ -209,13 +210,15 @@ describe('Waterfall dB → colour mapping', () => {
       lut[i * 4 + 3] = 255;
     }
 
-    const idx = dbToLutIndex(-84);  // 82
+    // With DB range [-110,-30], -84 dB → index = round(26/80*255) = round(82.9) = 83
+    const idx = dbToLutIndex(-84);  // 83
+    expect(idx).toBe(83);
     const r = lut[idx * 4];
     const g = lut[idx * 4 + 1];
     const bVal = lut[idx * 4 + 2];
     const a = lut[idx * 4 + 3];
 
-    // Index 82 is in the 64-127 band: blue+green ramp (cyan transition).
+    // Index 83 is in the 64-127 band: blue+green ramp (cyan transition).
     // Key invariants: opaque, has blue component, no red yet.
     expect(a).toBe(255);             // opaque
     expect(bVal).toBeGreaterThan(0); // has blue
