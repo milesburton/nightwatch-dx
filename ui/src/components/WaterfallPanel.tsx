@@ -93,7 +93,7 @@ export function WaterfallPanel() {
       // If the container hasn't been measured yet, size the canvases now.
       let W = wfCanvas.width;
       if (W === 0) {
-        const containerW = wfCanvas.parentElement?.clientWidth ?? 0;
+        const containerW = Math.floor(wfCanvas.getBoundingClientRect().width);
         if (containerW === 0) return;
         W = containerW;
         specCanvas.width  = containerW;

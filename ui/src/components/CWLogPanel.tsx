@@ -140,12 +140,12 @@ export function CWLogPanel() {
     };
   }, [resetTimer]);
 
-  // Auto-scroll live view
+  // Auto-scroll live view only when new text arrives, and only within the panel's own scroll container
   useEffect(() => {
-    if (selectedId === 'live') {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (selectedId === 'live' && liveText) {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
-  });
+  }, [liveText, selectedId]);
 
   // ── Render helpers ──────────────────────────────────────────────────────────
   const selectedSession = selectedId !== 'live'
