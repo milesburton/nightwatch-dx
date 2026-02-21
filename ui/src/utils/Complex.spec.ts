@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Complex } from './Complex.js';
 
-const EPS = 1e-10;
-const close = (a: number, b: number) => Math.abs(a - b) < EPS;
 
 describe('Complex', () => {
   describe('construction', () => {
