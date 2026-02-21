@@ -34,8 +34,8 @@ function buildColorLut(): Uint8ClampedArray {
 
 const COLOR_LUT = buildColorLut();
 
-const DB_MIN   = -80;
-const DB_MAX   = -20;
+const DB_MIN   = -100;
+const DB_MAX   = -50;
 const DB_RANGE = DB_MAX - DB_MIN;
 
 function dbToLutIndex(db: number): number {
@@ -262,7 +262,7 @@ export function WaterfallPanel() {
           style={{ height: `${SPECTRUM_HEIGHT}px` }}
         />
         <div className="absolute top-0 right-1 h-full flex flex-col justify-between pointer-events-none">
-          {[-20, -35, -50, -65, -80].map((db) => (
+          {[-50, -62, -75, -87, -100].map((db) => (
             <span key={db} className="text-white/30 text-[9px] font-mono leading-none">{db}</span>
           ))}
         </div>
