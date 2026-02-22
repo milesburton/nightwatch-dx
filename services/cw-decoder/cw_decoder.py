@@ -88,13 +88,13 @@ class CWSignalChain:
         self._zi1_im  = np.zeros(len(_taps1) - 1)
         self._zi2_re  = np.zeros(len(_taps2) - 1)
         self._zi2_im  = np.zeros(len(_taps2) - 1)
-        _tau_sec      = 0.001
-        self._env_alpha  = float(1 - np.exp(-1 / (_tau_sec * AUDIO_RATE)))
+        self._env_attack = float(1 - np.exp(-1 / (0.0005 * AUDIO_RATE)))
+        self._env_decay  = float(1 - np.exp(-1 / (0.0002 * AUDIO_RATE)))
         self._env_state  = 0.0
         self._window: deque[float] = deque(maxlen=AUDIO_RATE * 3)
         self._threshold     = 0.05
         self._threshold_ctr = 0
-        self._hyst_frac     = 0.20
+        self._hyst_frac     = 0.10
         self._morse         = MorseDecoder()
         self._tone_on       = False
         self._tone_start    = 0
@@ -142,11 +142,13 @@ class CWSignalChain:
         im2, self._zi2_im = lfilter(_taps2, 1.0, stage1.imag, zi=self._zi2_im)
         audio = (re2 + 1j * im2)[DECIMATE2 - 1::DECIMATE2]
 
-        mags  = np.abs(audio).astype(np.float64)
-        alpha = self._env_alpha
-        env   = np.empty_like(mags)
-        state = self._env_state
+        mags   = np.abs(audio).astype(np.float64)
+        attack = self._env_attack
+        decay  = self._env_decay
+        env    = np.empty_like(mags)
+        state  = self._env_state
         for i, m in enumerate(mags):
+            alpha  = attack if m > state else decay
             state += alpha * (m - state)
             env[i] = state
         self._env_state = float(state)

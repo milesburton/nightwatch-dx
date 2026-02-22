@@ -8,6 +8,9 @@
  * A 30-second inactivity timer marks the end of each session.
  *
  * Data source: WebSocket to /ws/cw (cw-decoder Python service).
+ *
+ * Each decoded character is rendered as a hoverable token — plain text visible
+ * by default, Morse dots/dashes revealed on hover.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -16,6 +19,73 @@ import type { CWSession } from '../utils/db.js';
 import { listCWSessions, saveCWSession } from '../utils/db.js';
 
 const SESSION_TIMEOUT_MS = 30_000;
+
+const CHAR_TO_MORSE: Record<string, string> = {
+  A: '.-',    B: '-...',  C: '-.-.',  D: '-..',   E: '.',
+  F: '..-.',  G: '--.',   H: '....',  I: '..',    J: '.---',
+  K: '-.-',   L: '.-..',  M: '--',    N: '-.',    O: '---',
+  P: '.--.',  Q: '--.-',  R: '.-.',   S: '...',   T: '-',
+  U: '..-',   V: '...-',  W: '.--',   X: '-..-',  Y: '-.--',
+  Z: '--..',
+  '0': '-----', '1': '.----', '2': '..---', '3': '...--', '4': '....-',
+  '5': '.....', '6': '-....', '7': '--...', '8': '---..', '9': '----.',
+  '.': '.-.-.-', ',': '--..--', '?': '..--..', "'": '.----.',
+  '!': '-.-.--', '/': '-..-.', '(': '-.--.', ')': '-.--.-',
+  '&': '.-...', ':': '---...', ';': '-.-.-.', '=': '-...-',
+  '+': '.-.-.', '-': '-....-', '_': '..--.-', '"': '.-..-.',
+  '$': '...-..-', '@': '.--.-.',
+};
+
+interface CWToken {
+  id: number;
+  char: string;
+  morse: string;
+}
+
+let _tokenId = 0;
+
+function makeToken(ch: string): CWToken {
+  return {
+    id: _tokenId++,
+    char: ch,
+    morse: ch === ' ' ? '' : (CHAR_TO_MORSE[ch.toUpperCase()] ?? '?'),
+  };
+}
+
+function tokenise(text: string): CWToken[] {
+  return [...text].map(makeToken);
+}
+
+function CWChar({ token }: { token: CWToken }) {
+  if (token.char === ' ') {
+    return <span className="inline-block w-4" />;
+  }
+
+  return (
+    <span className="group relative inline-block cursor-default select-none">
+      <span className="group-hover:opacity-0 transition-opacity duration-100">
+        {token.char}
+      </span>
+      <span
+        className="absolute inset-0 flex items-center justify-center text-[0.65em] tracking-widest text-amber-400 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-100"
+        aria-hidden
+      >
+        {token.morse}
+      </span>
+    </span>
+  );
+}
+
+function CWText({ tokens, cursor }: { tokens: CWToken[]; cursor?: boolean }) {
+  return (
+    <p className="text-emerald-300 text-sm leading-relaxed whitespace-pre-wrap font-mono">
+      {tokens.map((tok) => (
+        <CWChar key={tok.id} token={tok} />
+      ))}
+      {cursor && <span className="cw-cursor" />}
+    </p>
+  );
+}
 
 function StatusDot({ live }: { live: boolean }) {
   return (
@@ -44,6 +114,7 @@ export function CWLogPanel() {
 
   // ── Live session state ──────────────────────────────────────────────────────
   const [connected, setConnected] = useState(false);
+  const [liveTokens, setLiveTokens] = useState<CWToken[]>([]);
   const [liveText, setLiveText] = useState('');
   const [liveFreq, setLiveFreq] = useState<number>(14_029_000);
   const [liveStartTs, setLiveStartTs] = useState<string>('');
@@ -80,6 +151,7 @@ export function CWLogPanel() {
     liveTextRef.current = '';
     liveStartRef.current = '';
     setLiveText('');
+    setLiveTokens([]);
     setLiveStartTs('');
   }, []);
 
@@ -129,10 +201,12 @@ export function CWLogPanel() {
           }
           liveTextRef.current += msg.char;
           setLiveText(liveTextRef.current);
+          setLiveTokens((prev) => [...prev, makeToken(msg.char)]);
           resetTimer();
         } else if (msg.type === 'word_space') {
           liveTextRef.current += ' ';
           setLiveText(liveTextRef.current);
+          setLiveTokens((prev) => [...prev, makeToken(' ')]);
           resetTimer();
         }
       };
@@ -147,7 +221,7 @@ export function CWLogPanel() {
     };
   }, [resetTimer]);
 
-  // Auto-scroll live view only when new text arrives, and only within the panel's own scroll container
+  // Auto-scroll live view
   useEffect(() => {
     if (selectedId === 'live' && liveText) {
       bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -175,6 +249,7 @@ export function CWLogPanel() {
               : 'Connecting to CW decoder…'}
           </p>
         </div>
+        <p className="text-white/20 text-[10px] font-mono italic">hover chars for morse</p>
       </div>
 
       {/* ── Master-detail body ── */}
@@ -239,11 +314,8 @@ export function CWLogPanel() {
                   {formatTime(liveStartTs)} · {formatFreq(liveFreq)}
                 </p>
               )}
-              {liveText ? (
-                <p className="text-emerald-300 text-sm leading-relaxed whitespace-pre-wrap">
-                  {liveText}
-                  <span className="cw-cursor" />
-                </p>
+              {liveTokens.length > 0 ? (
+                <CWText tokens={liveTokens} cursor />
               ) : (
                 <p className="text-white/20 text-xs italic">
                   {connected ? 'Waiting for CW signal…' : 'Connecting…'}
@@ -260,9 +332,7 @@ export function CWLogPanel() {
                 {' · '}
                 {formatFreq(selectedSession.freqHz)}
               </p>
-              <p className="text-emerald-300 text-sm leading-relaxed whitespace-pre-wrap">
-                {selectedSession.text}
-              </p>
+              <CWText tokens={tokenise(selectedSession.text)} />
             </>
           ) : (
             <p className="text-white/20 text-xs italic">Select a session.</p>

@@ -32,7 +32,7 @@ MORSE[' '] = ' '
 
 def make_cw_iq(text: str, amplitude: float = 0.6, noise_amplitude: float = 0.02) -> bytes:
     dit = DIT_SAMPLES * DECIMATE
-    intervals: list[tuple[bool, int]] = []
+    intervals: list[tuple[bool, int]] = [(False, SDR_SAMPLE_RATE)]
     first_char = True
     for ch in text.upper():
         if ch == ' ':
@@ -196,7 +196,8 @@ class TestIQGeneration:
 
     def test_tone_peak_is_near_dc_after_mixing(self):
         data = make_cw_iq('T')
-        raw  = np.frombuffer(data[:4096 * 2], dtype=np.uint8).astype(np.float32)
+        preroll = SDR_SAMPLE_RATE * 2
+        raw  = np.frombuffer(data[preroll:preroll + 4096 * 2], dtype=np.uint8).astype(np.float32)
         iq   = ((raw[0::2] - 127.5) + 1j * (raw[1::2] - 127.5)) / 127.5
         n    = len(iq)
         lo   = np.exp(-1j * 2 * np.pi * FREQ_OFFSET_HZ * np.arange(n) / SDR_SAMPLE_RATE)
