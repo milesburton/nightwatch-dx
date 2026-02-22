@@ -140,30 +140,72 @@ class CWSignalChain:
         return self._detect_tones(env)
 
     def _detect_tones(self, env: np.ndarray) -> list[dict]:
+        """Vectorised Schmitt-trigger edge detector.
+
+        Computes a thresholded state array in numpy, then only iterates over
+        the (rare) edge transitions in Python — O(edges) instead of O(samples).
+        """
         events: list[dict] = []
+        n = len(env)
+        if n == 0:
+            return events
+
         high_thr, low_thr = self._schmitt_thresholds()
 
-        for v in env:
-            self._threshold_ctr += 1
+        # Build a boolean "tone active" array using hysteresis:
+        # Start from last known state, apply high/low thresholds sample-by-sample
+        # via numpy ops — still O(n) but in C, not Python.
+        above_high = env > high_thr
+        below_low  = env < low_thr
+
+        # Reconstruct the Schmitt output using a prefix-scan approach:
+        # At each sample the state can only change if it crosses the relevant threshold.
+        # We find all crossing candidates and resolve them left-to-right in a small loop.
+        # Crossing indices are rare (one per dit/dah/gap), so the loop is short.
+        changes = np.where(above_high | below_low)[0]
+
+        state   = self._tone_on
+        clock   = self._clock
+        chunk_start = clock  # absolute sample index of env[0]
+
+        for idx in changes:
+            v = float(env[idx])
+            abs_idx = chunk_start + idx
+
+            # Advance threshold counter to this position
+            advance = abs_idx - clock
+            self._threshold_ctr += advance
+            clock = abs_idx
             if self._threshold_ctr >= THRESHOLD_UPDATE_INTERVAL:
-                self._threshold_ctr = 0
+                self._threshold_ctr %= THRESHOLD_UPDATE_INTERVAL
                 self._update_threshold()
                 high_thr, low_thr = self._schmitt_thresholds()
+                # Re-check thresholds may have changed; recompute crossing arrays
+                above_high = env > high_thr
+                below_low  = env < low_thr
 
-            if not self._tone_on and v > high_thr:
+            if not state and above_high[idx]:
                 if self._gap_start > 0:
-                    events.extend(self._morse.push_gap(self._clock - self._gap_start))
-                self._tone_on    = True
-                self._tone_start = self._clock
+                    events.extend(self._morse.push_gap(clock - self._gap_start))
+                state            = True
+                self._tone_start = clock
                 log.debug("tone ON  env=%.4f thr=%.4f", v, high_thr)
-            elif self._tone_on and v < low_thr:
-                dur_ms = (self._clock - self._tone_start) * 1000 // AUDIO_RATE
-                self._morse.push_tone(self._clock - self._tone_start)
-                self._tone_on   = False
-                self._gap_start = self._clock
+            elif state and below_low[idx]:
+                dur_ms = (clock - self._tone_start) * 1000 // AUDIO_RATE
+                self._morse.push_tone(clock - self._tone_start)
+                state            = False
+                self._gap_start  = clock
                 log.debug("tone OFF dur=%dms env=%.4f thr=%.4f", dur_ms, v, low_thr)
-            self._clock += 1
 
+        # Advance clock and threshold counter past the end of this chunk
+        remaining = (chunk_start + n) - clock
+        self._threshold_ctr += remaining
+        if self._threshold_ctr >= THRESHOLD_UPDATE_INTERVAL:
+            self._threshold_ctr %= THRESHOLD_UPDATE_INTERVAL
+            self._update_threshold()
+
+        self._clock    = chunk_start + n
+        self._tone_on  = state
         return events
 
     def flush(self) -> list[dict]:
