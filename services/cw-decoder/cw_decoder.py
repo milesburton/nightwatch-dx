@@ -20,7 +20,7 @@ WS_PORT  = int(os.environ.get("WS_PORT",  "8765"))
 AUDIO_RATE  = 24_000
 CW_FREQ_HZ  = 14_029_000
 
-WPM         = 20
+WPM         = 12   # starting estimate; adapts in real-time. 20m CW typically 5-25 WPM
 DIT_SAMPLES = round((60 / (50 * WPM)) * AUDIO_RATE)
 
 # Update threshold every ~500 ms.  Initial fast-adapt period uses a shorter

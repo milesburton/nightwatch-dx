@@ -122,8 +122,8 @@ class TestConstants:
     def test_audio_rate_is_24khz(self):
         assert cwd.AUDIO_RATE == 24_000
 
-    def test_dit_samples_matches_20wpm_timing(self):
-        expected = round((60 / (50 * 20)) * AUDIO_RATE)
+    def test_dit_samples_matches_wpm_timing(self):
+        expected = round((60 / (50 * cwd.WPM)) * AUDIO_RATE)
         assert expected == cwd.DIT_SAMPLES
 
 
