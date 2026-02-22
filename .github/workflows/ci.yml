@@ -26,7 +26,7 @@ jobs:
 
     - name: Run tests
       run: |
-        pytest tests/ -v --cov=services --cov-report=xml --cov-report=term-missing
+        pytest services/ -v --cov=services --cov-report=xml --cov-report=term-missing
 
     - name: Upload coverage
       continue-on-error: true
@@ -87,6 +87,9 @@ jobs:
 
     - name: Build sstv-decoder
       run: docker compose build sstv-decoder
+
+    - name: Build easypal-decoder
+      run: docker compose build easypal-decoder
 
     - name: Build ui
       run: docker compose build ui
