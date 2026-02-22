@@ -2,6 +2,7 @@ services:
 
   # ── RTL-SDR hardware interface + IQ multiplexer ───────────────────────────
   rtl-bridge:
+    image: ghcr.io/milesburton/dx-watch/rtl-bridge:latest
     build:
       context: .
       dockerfile: docker/rtl-bridge/Dockerfile
@@ -21,6 +22,7 @@ services:
 
   # ── CW decoder ────────────────────────────────────────────────────────────
   cw-decoder:
+    image: ghcr.io/milesburton/dx-watch/cw-decoder:latest
     build:
       context: .
       dockerfile: docker/cw-decoder/Dockerfile
@@ -35,6 +37,7 @@ services:
 
   # ── SSTV decoder ──────────────────────────────────────────────────────────
   sstv-decoder:
+    image: ghcr.io/milesburton/dx-watch/sstv-decoder:latest
     build:
       context: .
       dockerfile: docker/sstv-decoder/Dockerfile
@@ -49,6 +52,7 @@ services:
 
   # ── EasyPal decoder ───────────────────────────────────────────────────────
   easypal-decoder:
+    image: ghcr.io/milesburton/dx-watch/easypal-decoder:latest
     build:
       context: .
       dockerfile: docker/easypal-decoder/Dockerfile
@@ -63,6 +67,7 @@ services:
 
   # ── Web UI ────────────────────────────────────────────────────────────────
   ui:
+    image: ghcr.io/milesburton/dx-watch/ui:latest
     build:
       context: .
       dockerfile: docker/ui/Dockerfile
