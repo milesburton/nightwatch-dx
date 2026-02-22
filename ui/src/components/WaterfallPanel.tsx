@@ -36,8 +36,8 @@ function buildColorLut(): Uint8ClampedArray {
 
 const COLOR_LUT = buildColorLut();
 
-const DB_MIN = -120;
-const DB_MAX = -50;
+const DB_MIN = -100;
+const DB_MAX = -20;
 const DB_RANGE = DB_MAX - DB_MIN;
 
 function dbToLutIndex(db: number): number {

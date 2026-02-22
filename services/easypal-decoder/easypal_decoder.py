@@ -29,6 +29,7 @@ Outbound message types:
 
 import asyncio
 import base64
+import contextlib
 import io
 import json
 import logging
@@ -698,33 +699,53 @@ async def iq_reader(hub: Hub) -> None:
             log.info("Connected. Listening for EasyPal on %.3f MHz…", EASYPAL_FREQ_HZ / 1e6)
             await hub.set_connected(True)
 
-            while True:
-                chunk = await reader.read(65536)
-                if not chunk:
-                    break
+            queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=4)
 
-                # IQ → FM audio at 24 kHz
-                audio = chain.process(chunk)
+            async def _drain() -> None:
+                try:
+                    while True:
+                        data = await reader.read(65536)
+                        if not data:
+                            break
+                        try:
+                            queue.put_nowait(data)
+                        except asyncio.QueueFull:
+                            with contextlib.suppress(asyncio.QueueEmpty):
+                                queue.get_nowait()
+                            queue.put_nowait(data)
+                finally:
+                    await queue.put(None)
 
-                # Audio → complex baseband at 12 kHz
-                bb = baseband.process(audio)
+            drain_task = asyncio.create_task(_drain())
+            loop = asyncio.get_event_loop()
 
-                # Demodulate OFDM symbols
+            def _process_chunk(c: bytes) -> list[tuple]:
+                audio   = chain.process(c)
+                bb      = baseband.process(audio)
                 symbols = ofdm.push(bb)
-
-                # Process each symbol through FEC + frame assembler
+                results = []
                 for cells, mask in symbols:
                     img = processor.feed_symbol(cells, mask)
                     if img is not None:
-                        log.info("EasyPal frame decoded (%dx%d)", img.width, img.height)
-                        loop     = asyncio.get_event_loop()
-                        data_url = await loop.run_in_executor(None, image_to_data_url, img)
-                        ts       = datetime.now(UTC).isoformat()
-                        await hub.broadcast({
-                            'type':         'frame',
-                            'imageDataUrl': data_url,
-                            'ts':           ts,
-                        })
+                        results.append(img)
+                return results
+
+            while True:
+                chunk = await queue.get()
+                if chunk is None:
+                    break
+                imgs = await loop.run_in_executor(None, _process_chunk, chunk)
+                for img in imgs:
+                    log.info("EasyPal frame decoded (%dx%d)", img.width, img.height)
+                    data_url = await loop.run_in_executor(None, image_to_data_url, img)
+                    ts       = datetime.now(UTC).isoformat()
+                    await hub.broadcast({
+                        'type':         'frame',
+                        'imageDataUrl': data_url,
+                        'ts':           ts,
+                    })
+
+            drain_task.cancel()
 
         except Exception as e:
             log.warning("Mux connection lost: %s, retrying in 5s…", e)

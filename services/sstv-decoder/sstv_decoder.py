@@ -19,6 +19,7 @@ Outbound message types:
 
 import asyncio
 import base64
+import contextlib
 import io
 import json
 import logging
@@ -452,18 +453,40 @@ async def iq_reader(hub: Hub) -> None:
             log.info("Connected. Listening for SSTV on %.3f MHz…", SSTV_FREQ_HZ / 1e6)
             await hub.set_connected(True)
 
+            queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=4)
+
+            async def _drain() -> None:
+                try:
+                    while True:
+                        data = await reader.read(65536)
+                        if not data:
+                            break
+                        try:
+                            queue.put_nowait(data)
+                        except asyncio.QueueFull:
+                            with contextlib.suppress(asyncio.QueueEmpty):
+                                queue.get_nowait()
+                            queue.put_nowait(data)
+                finally:
+                    await queue.put(None)
+
+            drain_task = asyncio.create_task(_drain())
+            loop = asyncio.get_event_loop()
+
+            def _process_chunk(c: bytes) -> tuple[np.ndarray, object]:
+                a = chain.process(c)
+                return a, detector.push(a)
+
             while True:
-                chunk = await reader.read(65536)
-                if not chunk:
+                chunk = await queue.get()
+                if chunk is None:
                     break
-                audio = chain.process(chunk)
-                result = detector.push(audio)
+                _, result = await loop.run_in_executor(None, _process_chunk, chunk)
                 if result is not None:
                     frame_audio, vis_code = result
                     mode_name = VIS_MODE_NAMES.get(vis_code, f'VIS {vis_code}')
                     log.info("SSTV frame detected: %s (%d samples)", mode_name, len(frame_audio))
-                    loop = asyncio.get_event_loop()
-                    img  = await loop.run_in_executor(
+                    img = await loop.run_in_executor(
                         None, decode_image, frame_audio, vis_code, AUDIO_RATE
                     )
                     data_url = image_to_data_url(img)
@@ -474,6 +497,8 @@ async def iq_reader(hub: Hub) -> None:
                         'mode': mode_name,
                         'ts': ts,
                     })
+
+            drain_task.cancel()
 
         except Exception as e:
             log.warning("Mux connection lost: %s, retrying in 5s…", e)
