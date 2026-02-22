@@ -477,7 +477,8 @@ async def status_ws_handler(request: web.Request) -> web.WebSocketResponse:
     with contextlib.suppress(Exception):
         await ws.send_str(json.dumps(_host_stats()))
     try:
-        await ws.wait_for_close()
+        async for _ in ws:
+            pass  # clients don't send; just wait for disconnect
     finally:
         _status_clients.discard(ws)
     return ws
