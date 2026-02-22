@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { CWLogPanel } from './components/CWLogPanel.js';
+import { EasyPalGalleryPanel } from './components/EasyPalGalleryPanel.js';
 import { SSTVGalleryPanel } from './components/SSTVGalleryPanel.js';
 import { WaterfallPanel } from './components/WaterfallPanel.js';
 import type { CWSocketMessage } from './types.js';
@@ -71,10 +72,12 @@ function useSignalStatus() {
   const [hwDown, setHwDown] = useState(false);
   const [cwActive, setCwActive] = useState(false);
   const [sstActive, setSstActive] = useState(false);
+  const [easypalActive, setEasypalActive] = useState(false);
 
-  const cwTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const sstTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const hwTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cwTimer      = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sstTimer     = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const easypalTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hwTimer      = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // IQ / spectrum — track connection AND data flow
   useEffect(() => {
@@ -142,7 +145,31 @@ function useSignalStatus() {
     };
   }, []);
 
-  return { iqConnected, hwDown, cwActive, sstActive };
+  // EasyPal active — listen for frame events
+  useEffect(() => {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws/easypal`);
+
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data as string) as { type: string };
+        if (msg.type === 'frame') {
+          setEasypalActive(true);
+          if (easypalTimer.current) clearTimeout(easypalTimer.current);
+          easypalTimer.current = setTimeout(() => setEasypalActive(false), ACTIVE_TTL_MS);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+
+    return () => {
+      ws.close();
+      if (easypalTimer.current) clearTimeout(easypalTimer.current);
+    };
+  }, []);
+
+  return { iqConnected, hwDown, cwActive, sstActive, easypalActive };
 }
 
 function Subtitle({
@@ -150,11 +177,13 @@ function Subtitle({
   hwDown,
   cwActive,
   sstActive,
+  easypalActive,
 }: {
   iqConnected: boolean;
   hwDown: boolean;
   cwActive: boolean;
   sstActive: boolean;
+  easypalActive: boolean;
 }) {
   const parts: string[] = [];
 
@@ -166,7 +195,10 @@ function Subtitle({
     parts.push('Scanning 20m');
     if (cwActive) parts.push('CW Active');
     if (sstActive) parts.push('SSTV Active');
+    if (easypalActive) parts.push('EasyPal Active');
   }
+
+  const activeLabels = new Set(['CW Active', 'SSTV Active', 'EasyPal Active']);
 
   return (
     <p className="text-sm text-white/50 tracking-widest uppercase font-medium">
@@ -177,7 +209,7 @@ function Subtitle({
             className={
               part === 'SDR Hardware Offline'
                 ? 'text-red-400'
-                : part === 'CW Active' || part === 'SSTV Active'
+                : activeLabels.has(part)
                   ? 'text-emerald-400'
                   : undefined
             }
@@ -192,29 +224,31 @@ function Subtitle({
 
 // ── App ────────────────────────────────────────────────────────────────────────
 
-function useDocumentTitle(hwDown: boolean, iqConnected: boolean, cwActive: boolean, sstActive: boolean) {
+function useDocumentTitle(hwDown: boolean, iqConnected: boolean, cwActive: boolean, sstActive: boolean, easypalActive: boolean) {
   useEffect(() => {
     if (hwDown) {
       document.title = '⚠ Offline — dx-watch';
     } else if (!iqConnected) {
       document.title = 'Connecting… — dx-watch';
-    } else if (cwActive && sstActive) {
-      document.title = '● CW + SSTV — dx-watch';
-    } else if (cwActive) {
-      document.title = '● CW Active — dx-watch';
-    } else if (sstActive) {
-      document.title = '● SSTV Active — dx-watch';
     } else {
-      document.title = 'Scanning 20m — dx-watch';
+      const active: string[] = [];
+      if (cwActive) active.push('CW');
+      if (sstActive) active.push('SSTV');
+      if (easypalActive) active.push('EasyPal');
+      if (active.length > 0) {
+        document.title = `● ${active.join(' + ')} — dx-watch`;
+      } else {
+        document.title = 'Scanning 20m — dx-watch';
+      }
     }
-  }, [hwDown, iqConnected, cwActive, sstActive]);
+  }, [hwDown, iqConnected, cwActive, sstActive, easypalActive]);
 }
 
 export default function App() {
   useStarfield();
   useVersionPoller();
-  const { iqConnected, hwDown, cwActive, sstActive } = useSignalStatus();
-  useDocumentTitle(hwDown, iqConnected, cwActive, sstActive);
+  const { iqConnected, hwDown, cwActive, sstActive, easypalActive } = useSignalStatus();
+  useDocumentTitle(hwDown, iqConnected, cwActive, sstActive, easypalActive);
 
   return (
     <>
@@ -249,6 +283,7 @@ export default function App() {
             hwDown={hwDown}
             cwActive={cwActive}
             sstActive={sstActive}
+            easypalActive={easypalActive}
           />
         </header>
 
@@ -256,6 +291,7 @@ export default function App() {
           <WaterfallPanel />
           <CWLogPanel />
           <SSTVGalleryPanel />
+          <EasyPalGalleryPanel />
         </main>
 
         <footer className="text-center text-white/40 py-6 text-sm mt-6 space-y-1">

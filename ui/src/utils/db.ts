@@ -1,14 +1,15 @@
 /**
  * IndexedDB wrapper for persistent 20m Signal Decoder storage.
  *
- * DB: sdr-monitor  version: 1
+ * DB: sdr-monitor  version: 2
  * Stores:
- *   cw-sessions  — CW transmission sessions (max 500)
- *   sstv-frames  — Auto-decoded SSTV frames   (max 100)
+ *   cw-sessions    — CW transmission sessions   (max 500)
+ *   sstv-frames    — Auto-decoded SSTV frames    (max 100)
+ *   easypal-frames — Auto-decoded EasyPal images (max 100)
  */
 
 const DB_NAME = 'sdr-monitor';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export interface CWSession {
   id?: number; // autoIncrement key
@@ -23,6 +24,12 @@ export interface SSTVFrame {
   ts: string; // ISO timestamp of detection
   imageUrl: string; // data: URL (PNG)
   mode: string; // SSTV mode name
+}
+
+export interface EasyPalFrame {
+  id?: number; // autoIncrement key
+  ts: string; // ISO timestamp of detection
+  imageUrl: string; // data: URL (PNG)
 }
 
 // ── Internal DB open ──────────────────────────────────────────────────────────
@@ -40,6 +47,9 @@ function openDB(): Promise<IDBDatabase> {
       }
       if (!db.objectStoreNames.contains('sstv-frames')) {
         db.createObjectStore('sstv-frames', { keyPath: 'id', autoIncrement: true });
+      }
+      if (!db.objectStoreNames.contains('easypal-frames')) {
+        db.createObjectStore('easypal-frames', { keyPath: 'id', autoIncrement: true });
       }
     };
     req.onsuccess = () => {
@@ -114,8 +124,9 @@ function purgeOldest(storeName: string, max: number): Promise<void> {
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
-const MAX_CW_SESSIONS = 500;
-const MAX_SSTV_FRAMES = 100;
+const MAX_CW_SESSIONS  = 500;
+const MAX_SSTV_FRAMES  = 100;
+const MAX_EASYPAL_FRAMES = 100;
 
 export async function saveCWSession(session: CWSession): Promise<void> {
   await put('cw-sessions', session);
@@ -133,4 +144,13 @@ export async function saveSSTV(frame: SSTVFrame): Promise<void> {
 
 export function listSSTV(): Promise<SSTVFrame[]> {
   return getAll<SSTVFrame>('sstv-frames');
+}
+
+export async function saveEasyPal(frame: EasyPalFrame): Promise<void> {
+  await put('easypal-frames', frame);
+  await purgeOldest('easypal-frames', MAX_EASYPAL_FRAMES);
+}
+
+export function listEasyPal(): Promise<EasyPalFrame[]> {
+  return getAll<EasyPalFrame>('easypal-frames');
 }

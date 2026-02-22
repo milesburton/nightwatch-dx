@@ -16,6 +16,7 @@ except ImportError:
     sys.modules["aiohttp.web"] = web_stub
 
 import os
+
 sys.path.insert(0, os.path.dirname(__file__))
 
 import cw_decoder as cwd  # noqa: E402
@@ -124,7 +125,7 @@ class TestConstants:
 
     def test_dit_samples_matches_20wpm_timing(self):
         expected = round((60 / (50 * 20)) * AUDIO_RATE)
-        assert cwd.DIT_SAMPLES == expected
+        assert expected == cwd.DIT_SAMPLES
 
 
 # ── FIR filter ────────────────────────────────────────────────────────────────
@@ -271,6 +272,44 @@ class TestCWSignalChain:
         chain = cwd.CWSignalChain()
         chars = chars_from(chain.process(noise.tobytes()))
         assert chars == [], f"noise gate failed — got {len(chars)} false chars: {chars[:5]}"
+
+    def test_off_frequency_interferer_does_not_produce_characters(self):
+        """Bandpass filter must reject a CW station 5 kHz away from CW_FREQ_HZ."""
+        interferer_offset = cwd.FREQ_OFFSET_HZ + 5_000   # 5 kHz above target
+        intervals = [(False, SDR_SAMPLE_RATE)]            # 1 s silence pre-roll
+        dit_n = DIT_SAMPLES * DECIMATE
+        # Send 'SOS' on the interferer frequency
+        for sym in '... --- ...':
+            if sym == ' ':
+                intervals.append((False, dit_n * 3))
+                continue
+            intervals.append((True,  dit_n if sym == '.' else dit_n * 3))
+            intervals.append((False, dit_n))
+        intervals.append((False, dit_n * 7))
+
+        import math
+        total = sum(n for _, n in intervals)
+        iq    = np.zeros(total, dtype=np.complex64)
+        step  = 2 * math.pi * interferer_offset / SDR_SAMPLE_RATE
+        rng   = np.random.default_rng(7)
+        idx   = 0
+        for tone_on, n in intervals:
+            t = np.arange(n, dtype=np.float64)
+            if tone_on:
+                iq[idx:idx + n] = (0.6 * np.exp(1j * t * step)).astype(np.complex64)
+            iq[idx:idx + n] += (rng.standard_normal(n) + 1j * rng.standard_normal(n)).astype(np.complex64) * 0.02
+            idx += n
+
+        i_u8 = np.clip(iq.real * 127.5 + 127.5, 0, 255).astype(np.uint8)
+        q_u8 = np.clip(iq.imag * 127.5 + 127.5, 0, 255).astype(np.uint8)
+        raw = np.empty(total * 2, dtype=np.uint8)
+        raw[0::2] = i_u8
+        raw[1::2] = q_u8
+
+        chain = cwd.CWSignalChain()
+        events = [*chain.process(raw.tobytes()), *chain.flush()]
+        chars = chars_from(events)
+        assert chars == [], f"bandpass failed — off-freq interferer produced {chars}"
 
 
 # ── IQ generation ─────────────────────────────────────────────────────────────

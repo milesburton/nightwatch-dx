@@ -21,15 +21,22 @@ RF_CENTER_HZ    = SDR_CENTER_HZ - LO_OFFSET_HZ
 CW_FREQ_HZ      = 14_029_000
 FREQ_OFFSET_HZ  = CW_FREQ_HZ - RF_CENTER_HZ
 
-AUDIO_RATE  = SDR_SAMPLE_RATE // 100
+# Two-stage 100× decimation: 2.4 MHz → 24 kHz
+DECIMATE1    = 10
+DECIMATE2    = 10
+INTERMEDIATE = SDR_SAMPLE_RATE // DECIMATE1   # 240_000
+AUDIO_RATE   = INTERMEDIATE // DECIMATE2       # 24_000
+
 WPM         = 20
 DIT_SAMPLES = round((60 / (50 * WPM)) * AUDIO_RATE)
 
 THRESHOLD_UPDATE_INTERVAL = max(DIT_SAMPLES // 8, 50)
 
-DECIMATE1    = 10
-DECIMATE2    = 10
-INTERMEDIATE = SDR_SAMPLE_RATE // DECIMATE1
+# Bandpass half-bandwidth around the mixed-to-DC CW tone.
+# After mixing CW_FREQ_HZ to DC, keep only ±BP_HZ.
+# 500 Hz passes ±50 Hz operator drift and keying artefacts,
+# and rejects adjacent SSB / other CW stations.
+BP_HZ = 500
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [cw] %(message)s")
 log = logging.getLogger(__name__)
@@ -48,8 +55,13 @@ def kaiser_lowpass(cutoff: float, sample_rate: float, duration: float = 0.001, b
     return (taps / taps.sum()).astype(np.float32)
 
 
-_taps1 = kaiser_lowpass(AUDIO_RATE / 2, SDR_SAMPLE_RATE)
-_taps2 = kaiser_lowpass(AUDIO_RATE / 2, INTERMEDIATE)
+# Stage-1 anti-aliasing LPF (before first decimation)
+_taps1 = kaiser_lowpass(INTERMEDIATE / 2, SDR_SAMPLE_RATE)
+# Stage-2 anti-aliasing LPF (before second decimation)
+_taps2 = kaiser_lowpass(AUDIO_RATE   / 2, INTERMEDIATE)
+# Narrow bandpass at audio rate: keep only ±BP_HZ around DC (the mixed CW tone).
+# Longer filter (5 ms × 24 kHz = 120 taps) for steeper skirts.
+_taps_bp = kaiser_lowpass(BP_HZ, AUDIO_RATE, duration=0.005, beta=8.0)
 
 
 class LOOscillator:
@@ -81,19 +93,21 @@ class LOOscillator:
 
 
 class CWSignalChain:
-    _LOG_INTERVAL_SEC = 60.0
-    _MIN_SNR_RATIO    = 1.8
+    _LOG_INTERVAL_SEC = 15.0   # log signal levels every 15 s for live diagnostics
 
     def __init__(self) -> None:
-        self._lo      = LOOscillator(FREQ_OFFSET_HZ, SDR_SAMPLE_RATE)
-        self._zi1_re  = np.zeros(len(_taps1) - 1)
-        self._zi1_im  = np.zeros(len(_taps1) - 1)
-        self._zi2_re  = np.zeros(len(_taps2) - 1)
-        self._zi2_im  = np.zeros(len(_taps2) - 1)
+        self._lo       = LOOscillator(FREQ_OFFSET_HZ, SDR_SAMPLE_RATE)
+        self._zi1_re   = np.zeros(len(_taps1)   - 1)
+        self._zi1_im   = np.zeros(len(_taps1)   - 1)
+        self._zi2_re   = np.zeros(len(_taps2)   - 1)
+        self._zi2_im   = np.zeros(len(_taps2)   - 1)
+        self._zi_bp_re = np.zeros(len(_taps_bp) - 1)
+        self._zi_bp_im = np.zeros(len(_taps_bp) - 1)
         self._env_attack  = float(1 - np.exp(-1 / (0.0005 * AUDIO_RATE)))
         self._env_decay   = float(1 - np.exp(-1 / (0.0002 * AUDIO_RATE)))
         self._env_state   = 0.0
         self._window      = deque[float](maxlen=AUDIO_RATE * 3)
+        self._env_max     = 0.0    # max envelope value since last log (signal level check)
         self._threshold   = 0.05
         self._hyst_frac   = 0.10
         self._threshold_ctr = 0
@@ -106,18 +120,24 @@ class CWSignalChain:
 
     def _compute_threshold_from_window(self) -> float:
         arr = np.array(self._window)
-        p5  = float(np.percentile(arr, 5))
+        p10 = float(np.percentile(arr, 10))
         p90 = float(np.percentile(arr, 90))
         now = time.monotonic()
         if now - self._last_log_ts >= self._LOG_INTERVAL_SEC:
             self._last_log_ts = now
-            snr = p90 / p5 if p5 > 1e-9 else 0
-            log.info("threshold p5=%.4f p90=%.4f snr=%.2fx thr=%.4f", p5, p90, snr, self._threshold)
-        if p5 < 1e-9:
+            snr = p90 / p10 if p10 > 1e-9 else 0
+            log.info(
+                "signal: p10=%.4f p90=%.4f peak=%.4f snr=%.1fx | thr=%.4f (high=%.4f)",
+                p10, p90, self._env_max, snr, self._threshold,
+                self._threshold * (1 + self._hyst_frac),
+            )
+            self._env_max = 0.0
+        if p10 < 1e-9:
             return self._threshold
-        if p90 / p5 < self._MIN_SNR_RATIO:
-            return p90 * 10
-        return p5 + (p90 - p5) * 0.5
+        # Midpoint between noise floor (p10) and signal peak (p90).
+        # No SNR guard: the narrow bandpass has already rejected off-channel
+        # interference, so this ratio reflects real keying excursions.
+        return p10 + (p90 - p10) * 0.5
 
     def _update_threshold(self) -> None:
         if len(self._window) >= 20:
@@ -148,16 +168,27 @@ class CWSignalChain:
         iq    = ((samples[0::2] - 127.5) + 1j * (samples[1::2] - 127.5)) / 127.5
         mixed = iq.astype(np.complex64) * self._lo.generate(len(iq))
 
+        # Stage 1: anti-alias LPF + decimate ×10
         re1, self._zi1_re = lfilter(_taps1, 1.0, mixed.real, zi=self._zi1_re)
         im1, self._zi1_im = lfilter(_taps1, 1.0, mixed.imag, zi=self._zi1_im)
         stage1 = (re1 + 1j * im1)[DECIMATE1 - 1::DECIMATE1]
 
+        # Stage 2: anti-alias LPF + decimate ×10 → 24 kHz
         re2, self._zi2_re = lfilter(_taps2, 1.0, stage1.real, zi=self._zi2_re)
         im2, self._zi2_im = lfilter(_taps2, 1.0, stage1.imag, zi=self._zi2_im)
         audio = (re2 + 1j * im2)[DECIMATE2 - 1::DECIMATE2]
 
-        env = self._apply_envelope(np.abs(audio).astype(np.float64))
+        # Stage 3: narrow bandpass ±BP_HZ — isolates target CW tone, rejects
+        # adjacent SSB / other CW stations that passed the wide anti-alias LPF.
+        re3, self._zi_bp_re = lfilter(_taps_bp, 1.0, audio.real, zi=self._zi_bp_re)
+        im3, self._zi_bp_im = lfilter(_taps_bp, 1.0, audio.imag, zi=self._zi_bp_im)
+        narrowband = re3 + 1j * im3
+
+        env = self._apply_envelope(np.abs(narrowband).astype(np.float64))
         self._window.extend(env[::4].tolist())
+        peak = float(env.max()) if len(env) else 0.0
+        if peak > self._env_max:
+            self._env_max = peak
 
         return self._detect_tones(env)
 
@@ -177,10 +208,13 @@ class CWSignalChain:
                     events.extend(self._morse.push_gap(self._clock - self._gap_start))
                 self._tone_on    = True
                 self._tone_start = self._clock
+                log.debug("tone ON  env=%.4f thr=%.4f", v, high_thr)
             elif self._tone_on and v < low_thr:
+                dur_ms = (self._clock - self._tone_start) * 1000 // AUDIO_RATE
                 self._morse.push_tone(self._clock - self._tone_start)
                 self._tone_on   = False
                 self._gap_start = self._clock
+                log.debug("tone OFF dur=%dms env=%.4f thr=%.4f", dur_ms, v, low_thr)
             self._clock += 1
 
         return events
@@ -254,7 +288,7 @@ class MorseDecoder:
         char          = MORSE_CODE.get(code, f'[{code}]')
         self._symbols = []
         wpm = int(round(60 / (50 * (self._dit_est / AUDIO_RATE)))) if self._dit_est > 0 else 0
-        log.debug("decoded %r from %r  dit_est=%.0f samp (%d WPM)", char, code, self._dit_est, wpm)
+        log.info("decoded %r from %r  dit_est=%.0f samp (%d WPM)", char, code, self._dit_est, wpm)
         return [{'type': 'char', 'char': char, 'freq': CW_FREQ_HZ, 'ts': ts}]
 
 
@@ -324,7 +358,7 @@ async def iq_reader(hub: Hub) -> None:
             header = await reader.readexactly(12)
             if not header.startswith(b"RTL"):
                 raise ValueError(f"unexpected header: {header!r}")
-            log.info("connected — decoding CW on %.3f MHz", CW_FREQ_HZ / 1e6)
+            log.info("connected — decoding CW on %.3f MHz (±%d Hz bandpass)", CW_FREQ_HZ / 1e6, BP_HZ)
             await hub.set_connected(True)
 
             queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=4)
@@ -404,10 +438,8 @@ async def log_ws_handler(request: web.Request) -> web.WebSocketResponse:
     await ws.prepare(request)
     async for msg in ws:
         if msg.type == web.WSMsgType.TEXT:
-            try:
+            with contextlib.suppress(Exception):
                 _log_browser_entries(json.loads(msg.data))
-            except Exception:
-                pass
     return ws
 
 

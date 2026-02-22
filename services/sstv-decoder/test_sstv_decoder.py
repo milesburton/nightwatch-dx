@@ -16,7 +16,6 @@ import sys
 import types
 
 import numpy as np
-import pytest
 
 # ── Stub aiohttp so we can import sstv_decoder without a web server ────────────
 
@@ -33,7 +32,6 @@ except ImportError:
 
 sys.path.insert(0, os.path.dirname(__file__))
 import sstv_decoder as sstv  # noqa: E402
-
 
 # ── Pure test helpers ──────────────────────────────────────────────────────────
 
@@ -395,6 +393,7 @@ class TestImageToDataUrl:
 
     def test_output_is_valid_base64(self):
         import base64
+
         from PIL import Image
         img = Image.new('RGB', (8, 8), color=(0, 0, 0))
         url = sstv.image_to_data_url(img)

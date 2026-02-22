@@ -47,3 +47,11 @@ rtl_tcp_freq = target_RF_freq + 125_000_000
 For example, to tune to 40m (7.1 MHz centre): `-f 132100000`
 
 Also update the band markers in `ui/src/components/WaterfallPanel.tsx` (`BAND_MARKERS` array) and the `RF_CENTER_HZ` / `CW_FREQ_HZ` constants in the decoder services.
+
+## easypal-decoder
+
+| Variable | Default | Description |
+|---|---|---|
+| `MUX_HOST` | `rtl-bridge` | Hostname of the TCP multiplexer |
+| `MUX_PORT` | `1235` | TCP multiplexer port |
+| `WS_PORT` | `8767` | WebSocket port for decoded frame events |
