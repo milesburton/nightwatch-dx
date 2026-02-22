@@ -23,7 +23,10 @@ CW_FREQ_HZ  = 14_029_000
 WPM         = 20
 DIT_SAMPLES = round((60 / (50 * WPM)) * AUDIO_RATE)
 
-THRESHOLD_UPDATE_INTERVAL = max(DIT_SAMPLES // 8, 50)
+# Update threshold every ~500 ms.  Initial fast-adapt period uses a shorter
+# interval (see CWSignalChain.__init__ for _threshold_update_interval).
+THRESHOLD_UPDATE_INTERVAL = AUDIO_RATE // 2   # 12 000 samples = 500 ms
+THRESHOLD_FAST_INTERVAL   = DIT_SAMPLES * 2   # ~2 dits — fast adapt at startup
 
 # Narrow bandpass half-bandwidth around DC (the CW tone has already been mixed
 # to DC by rtl-bridge's AudioDecimator). Keep only +/-BP_HZ.
@@ -66,6 +69,8 @@ class CWSignalChain:
         self._threshold   = 0.05
         self._hyst_frac   = 0.10
         self._threshold_ctr = 0
+        # Fast adapt for the first ~3 seconds, then switch to slow update
+        self._fast_adapt_remaining = AUDIO_RATE * 3
         self._last_log_ts = time.monotonic()
         self._morse       = MorseDecoder()
         self._tone_on     = False
@@ -74,7 +79,7 @@ class CWSignalChain:
         self._clock       = 0
 
     def _compute_threshold_from_window(self) -> float:
-        arr = np.array(self._window)
+        arr = np.fromiter(self._window, dtype=np.float32, count=len(self._window))
         p10 = float(np.percentile(arr, 10))
         p90 = float(np.percentile(arr, 90))
         now = time.monotonic()
@@ -91,6 +96,11 @@ class CWSignalChain:
             return self._threshold
         # Midpoint between noise floor (p10) and signal peak (p90).
         return p10 + (p90 - p10) * 0.5
+
+    def _current_update_interval(self) -> int:
+        if self._fast_adapt_remaining > 0:
+            return THRESHOLD_FAST_INTERVAL
+        return THRESHOLD_UPDATE_INTERVAL
 
     def _update_threshold(self) -> None:
         if len(self._window) >= 20:
@@ -175,9 +185,11 @@ class CWSignalChain:
             # Advance threshold counter to this position
             advance = abs_idx - clock
             self._threshold_ctr += advance
+            self._fast_adapt_remaining = max(0, self._fast_adapt_remaining - advance)
             clock = abs_idx
-            if self._threshold_ctr >= THRESHOLD_UPDATE_INTERVAL:
-                self._threshold_ctr %= THRESHOLD_UPDATE_INTERVAL
+            interval = self._current_update_interval()
+            if self._threshold_ctr >= interval:
+                self._threshold_ctr %= interval
                 self._update_threshold()
                 high_thr, low_thr = self._schmitt_thresholds()
                 # Re-check thresholds may have changed; recompute crossing arrays
@@ -200,8 +212,10 @@ class CWSignalChain:
         # Advance clock and threshold counter past the end of this chunk
         remaining = (chunk_start + n) - clock
         self._threshold_ctr += remaining
-        if self._threshold_ctr >= THRESHOLD_UPDATE_INTERVAL:
-            self._threshold_ctr %= THRESHOLD_UPDATE_INTERVAL
+        self._fast_adapt_remaining = max(0, self._fast_adapt_remaining - remaining)
+        interval = self._current_update_interval()
+        if self._threshold_ctr >= interval:
+            self._threshold_ctr %= interval
             self._update_threshold()
 
         self._clock    = chunk_start + n
