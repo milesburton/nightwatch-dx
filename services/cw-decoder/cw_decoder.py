@@ -101,7 +101,7 @@ class CWSignalChain:
         self._gap_start     = 0
         self._clock         = 0
 
-    _MIN_SNR_RATIO = 2.5
+    _MIN_SNR_RATIO = 1.8
 
     def _update_threshold(self) -> None:
         if len(self._window) < 20:
