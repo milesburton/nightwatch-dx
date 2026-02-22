@@ -101,15 +101,23 @@ class CWSignalChain:
         return self._threshold + hyst, max(self._threshold - hyst, 0.001)
 
     def _apply_envelope(self, mags: np.ndarray) -> np.ndarray:
+        from scipy.signal import lfilter
+
         attack = self._env_attack
         decay  = self._env_decay
-        env    = np.empty_like(mags)
-        state  = self._env_state
-        for i, m in enumerate(mags):
-            alpha  = attack if m > state else decay
-            state += alpha * (m - state)
-            env[i] = state
-        self._env_state = float(state)
+
+        # Fast asymmetric envelope via two single-pole IIR passes:
+        #   attack path: y_a[n] = α_a·x[n] + (1-α_a)·y_a[n-1]
+        #   decay  path: y_d[n] = α_d·x[n] + (1-α_d)·y_d[n-1]
+        # Envelope = element-wise max of both paths, which approximates the
+        # behaviour of the original per-sample branch but runs fully in C.
+        zi_a = np.array([self._env_state * (1 - attack)])
+        zi_d = np.array([self._env_state * (1 - decay)])
+        env_a, zi_a_out = lfilter([attack], [1.0, -(1.0 - attack)], mags, zi=zi_a)
+        env_d, zi_d_out = lfilter([decay],  [1.0, -(1.0 - decay)],  mags, zi=zi_d)
+        env = np.maximum(env_a, env_d)
+        # Advance the state using whichever path was higher at the last sample
+        self._env_state = float(max(float(env_a[-1]), float(env_d[-1])) if len(env) else self._env_state)
         return env
 
     def process(self, raw: bytes) -> list[dict]:

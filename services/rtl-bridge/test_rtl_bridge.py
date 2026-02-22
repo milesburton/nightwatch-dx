@@ -196,16 +196,27 @@ class TestAudioDecimator:
         rng = np.random.default_rng(7)
         return rng.integers(0, 256, n_bytes, dtype=np.uint8).tobytes()
 
+    @staticmethod
+    def _raw_to_iq(raw: bytes) -> np.ndarray:
+        """Replicate the IQ parse done in Multiplexer.broadcast()."""
+        u8 = np.frombuffer(raw, dtype=np.uint8)
+        if len(u8) & 1:
+            u8 = u8[:-1]
+        u8f = u8.astype(np.float32)
+        iq = ((u8f[0::2] - 127.5) + 1j * (u8f[1::2] - 127.5)).astype(np.complex64)
+        iq /= 127.5
+        return iq
+
     def test_output_is_complex64(self):
         ad  = bridge.AudioDecimator(-146_000)
-        raw = self._make_raw()
-        out = ad.process(raw)
+        iq  = self._raw_to_iq(self._make_raw())
+        out = ad.process_iq(iq)
         assert out.dtype == np.complex64
 
     def test_output_length_is_100x_less_than_input_iq_pairs(self):
         ad  = bridge.AudioDecimator(55_000)
-        raw = self._make_raw(65536)
-        out = ad.process(raw)
+        iq  = self._raw_to_iq(self._make_raw(65536))
+        out = ad.process_iq(iq)
         # 65536 bytes = 32768 IQ pairs -> ~327-328 output samples (100x decimation)
         assert 310 <= len(out) <= 340
 
@@ -213,23 +224,24 @@ class TestAudioDecimator:
         ad1 = bridge.AudioDecimator(-146_000)
         ad2 = bridge.AudioDecimator(-146_000)
         raw = self._make_raw(131072)
-        out1 = ad1.process(raw)
-        out2a = ad2.process(raw[:65536])
-        out2b = ad2.process(raw[65536:])
+        iq  = self._raw_to_iq(raw)
+        out1  = ad1.process_iq(iq)
+        out2a = ad2.process_iq(self._raw_to_iq(raw[:65536]))
+        out2b = ad2.process_iq(self._raw_to_iq(raw[65536:]))
         out2  = np.concatenate([out2a, out2b])
         assert abs(len(out1) - len(out2)) <= 1
 
     def test_different_freq_offsets_produce_different_output(self):
-        raw = self._make_raw()
-        out_cw   = bridge.AudioDecimator(-146_000).process(raw)
-        out_sstv = bridge.AudioDecimator(55_000).process(raw)
+        iq = self._raw_to_iq(self._make_raw())
+        out_cw   = bridge.AudioDecimator(-146_000).process_iq(iq)
+        out_sstv = bridge.AudioDecimator(55_000).process_iq(iq)
         # Outputs should differ (different LO mix)
         assert not np.allclose(out_cw, out_sstv, atol=1e-3)
 
     def test_odd_byte_input_handled_safely(self):
         ad  = bridge.AudioDecimator(58_000)
-        raw = self._make_raw(65537)   # odd byte count
-        out = ad.process(raw)
+        iq  = self._raw_to_iq(self._make_raw(65537))   # odd byte count handled in _raw_to_iq
+        out = ad.process_iq(iq)
         assert out.dtype == np.complex64
 
 

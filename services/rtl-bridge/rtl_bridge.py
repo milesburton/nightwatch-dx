@@ -67,8 +67,8 @@ class AudioDecimator:
     Decimates raw uint8 IQ (2.4 Msps) to complex64 at 24 kHz for one target frequency.
 
     Steps:
-      1. Parse uint8 IQ pairs -> complex64 at SDR_RATE.
-      2. Mix by -freq_offset_hz to shift target to DC.
+      1. Accept pre-parsed complex64 IQ (shared across all decimator instances).
+      2. Mix by -freq_offset_hz using a running complex phasor (no np.exp).
       3. Stage-1: Chebyshev IIR LPF + 10x decimate.
       4. Stage-2: Chebyshev IIR LPF + 10x decimate -> 24 kHz complex64.
 
@@ -77,8 +77,9 @@ class AudioDecimator:
     """
 
     def __init__(self, freq_offset_hz: float) -> None:
-        self._step  = 2 * np.pi * freq_offset_hz / SDR_RATE
-        self._phase = 0.0
+        # Running phasor: multiply by _phasor_step each sample instead of np.exp
+        self._phasor_step = np.exp(-1j * 2 * np.pi * freq_offset_hz / SDR_RATE).astype(np.complex64)
+        self._phasor = np.complex64(1.0 + 0j)
         # sosfilt zi shape: (n_sections, 2) per channel
         n_sec1 = _SOS1.shape[0]
         n_sec2 = _SOS2.shape[0]
@@ -87,19 +88,18 @@ class AudioDecimator:
         self._zi2_re = np.zeros((n_sec2, 2))
         self._zi2_im = np.zeros((n_sec2, 2))
 
-    def process(self, raw: bytes) -> np.ndarray:
-        """raw: uint8 IQ bytes from rtl_tcp. Returns complex64 at AUDIO_RATE."""
-        u8 = np.frombuffer(raw, dtype=np.uint8).astype(np.float32)
-        if len(u8) & 1:
-            u8 = u8[:-1]
-        iq = ((u8[0::2] - 127.5) + 1j * (u8[1::2] - 127.5)) / 127.5
+    def process_iq(self, iq: np.ndarray) -> np.ndarray:
+        """iq: complex64 array at SDR_RATE. Returns complex64 at AUDIO_RATE."""
         n = len(iq)
 
-        # Mix target frequency to DC
-        phases      = self._phase + self._step * np.arange(n, dtype=np.float64)
-        self._phase = float(phases[-1] + self._step)
-        lo          = np.exp(-1j * phases).astype(np.complex64)
-        mixed       = (iq * lo).astype(np.complex64)
+        # Mix target frequency to DC using vectorised running phasor.
+        # np.cumprod on the step array avoids np.exp on a large phase array.
+        steps = np.full(n, self._phasor_step, dtype=np.complex64)
+        steps[0] = self._phasor * self._phasor_step
+        lo = np.cumprod(steps)
+        # Renormalise phasor each chunk to prevent floating-point drift
+        self._phasor = lo[-1] / abs(lo[-1])
+        mixed = iq * lo
 
         # Stage 1: Chebyshev IIR LPF + 10x decimate
         re1, self._zi1_re = sosfilt(_SOS1, mixed.real, zi=self._zi1_re)
@@ -132,21 +132,22 @@ class AudioMux:
         self._lock      = threading.Lock()
         self._raw_queue: queue.Queue[bytes] = queue.Queue(maxsize=8)
 
-    def add_raw(self, data: bytes) -> None:
-        """Called from broadcast() to enqueue raw IQ; drops oldest if full."""
+    def add_iq(self, iq: np.ndarray, raw_ref: bytes) -> None:
+        """Called from broadcast() to enqueue pre-parsed IQ; drops oldest if full."""
+        item = (iq, raw_ref)
         try:
-            self._raw_queue.put_nowait(data)
+            self._raw_queue.put_nowait(item)
         except queue.Full:
             with contextlib.suppress(queue.Empty):
                 self._raw_queue.get_nowait()
             with contextlib.suppress(queue.Full):
-                self._raw_queue.put_nowait(data)
+                self._raw_queue.put_nowait(item)
 
     def _decimation_worker(self) -> None:
         """Background thread: decimate IQ chunks and broadcast to audio clients."""
         while True:
-            raw     = self._raw_queue.get()
-            audio   = self._decimator.process(raw)
+            iq, raw_ref = self._raw_queue.get()
+            audio   = self._decimator.process_iq(iq)
             payload = audio.tobytes()
             with self._lock:
                 dead = []
@@ -254,9 +255,16 @@ class Multiplexer:
             for sock in dead:
                 self._clients.pop(sock, None)
 
-        # Feed audio mux queues for each decoder frequency
-        for mux in self._audio_muxes:
-            mux.add_raw(data)
+        # Parse IQ once; share the array across all audio mux decimators
+        if self._audio_muxes:
+            u8 = np.frombuffer(data, dtype=np.uint8)
+            if len(u8) & 1:
+                u8 = u8[:-1]
+            u8f = u8.astype(np.float32)
+            iq = ((u8f[0::2] - 127.5) + 1j * (u8f[1::2] - 127.5)).astype(np.complex64)
+            iq /= 127.5
+            for mux in self._audio_muxes:
+                mux.add_iq(iq, data)
 
         # WebSocket clients -- schedule coroutines onto the asyncio event loop
         if self._ws_loop and self._ws_loop.is_running():
