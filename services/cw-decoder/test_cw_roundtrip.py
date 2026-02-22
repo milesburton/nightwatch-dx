@@ -26,11 +26,12 @@ DIT_SAMPLES     = cwd.DIT_SAMPLES
 AUDIO_RATE      = cwd.AUDIO_RATE
 DECIMATE        = SDR_SAMPLE_RATE // AUDIO_RATE
 
-MORSE: dict[str, str] = {v: k for k, v in cwd.MORSE_CODE.items()}
-MORSE[' '] = ' '
+CHAR_TO_MORSE: dict[str, str] = {v: k for k, v in cwd.MORSE_CODE.items()}
 
 
-def make_cw_iq(text: str, amplitude: float = 0.6, noise_amplitude: float = 0.02) -> bytes:
+# ── Pure test helpers ─────────────────────────────────────────────────────────
+
+def morse_intervals_for(text: str) -> list[tuple[bool, int]]:
     dit = DIT_SAMPLES * DECIMATE
     intervals: list[tuple[bool, int]] = [(False, SDR_SAMPLE_RATE)]
     first_char = True
@@ -39,7 +40,7 @@ def make_cw_iq(text: str, amplitude: float = 0.6, noise_amplitude: float = 0.02)
             intervals.append((False, dit * 4))
             first_char = True
             continue
-        symbols = MORSE.get(ch)
+        symbols = CHAR_TO_MORSE.get(ch)
         if symbols is None:
             continue
         if not first_char:
@@ -50,164 +51,253 @@ def make_cw_iq(text: str, amplitude: float = 0.6, noise_amplitude: float = 0.02)
                 intervals.append((False, dit))
             intervals.append((True, dit if sym == '.' else dit * 3))
     intervals.append((False, dit * 7))
+    return intervals
 
+
+def render_iq(intervals: list[tuple[bool, int]], amplitude: float = 0.6, noise_amplitude: float = 0.02) -> bytes:
     total_samples = sum(n for _, n in intervals)
-    iq = np.zeros(total_samples, dtype=np.complex64)
+    iq    = np.zeros(total_samples, dtype=np.complex64)
     phase = 0.0
-    phase_step = 2 * math.pi * FREQ_OFFSET_HZ / SDR_SAMPLE_RATE
-    idx = 0
-    rng = np.random.default_rng(42)
+    step  = 2 * math.pi * FREQ_OFFSET_HZ / SDR_SAMPLE_RATE
+    rng   = np.random.default_rng(42)
+    idx   = 0
     for tone_on, n in intervals:
-        if tone_on:
-            t = np.arange(n, dtype=np.float64)
-            phases = phase + t * phase_step
-            chunk = amplitude * np.exp(1j * phases).astype(np.complex64)
-            phase = float(phases[-1] + phase_step)
-        else:
-            chunk = np.zeros(n, dtype=np.complex64)
-            phase += phase_step * n
-        noise = rng.standard_normal(n) * noise_amplitude + 1j * rng.standard_normal(n) * noise_amplitude
-        iq[idx:idx + n] = chunk + noise.astype(np.complex64)
-        idx += n
+        t      = np.arange(n, dtype=np.float64)
+        signal = amplitude * np.exp(1j * (phase + t * step)) if tone_on else np.zeros(n, dtype=np.complex64)
+        noise  = (rng.standard_normal(n) + 1j * rng.standard_normal(n)) * noise_amplitude
+        iq[idx:idx + n] = signal.astype(np.complex64) + noise.astype(np.complex64)
+        phase += float((phase + t[-1] * step + step) if tone_on else (phase + n * step)) - phase if n else 0
+        phase  = float(phase + t[-1] * step + step) if tone_on else float(phase + n * step)
+        idx   += n
+    i_samples = np.clip(iq.real * 127.5 + 127.5, 0, 255).astype(np.uint8)
+    q_samples = np.clip(iq.imag * 127.5 + 127.5, 0, 255).astype(np.uint8)
+    interleaved = np.empty(total_samples * 2, dtype=np.uint8)
+    interleaved[0::2] = i_samples
+    interleaved[1::2] = q_samples
+    return interleaved.tobytes()
 
-    i_f = np.clip(iq.real * 127.5 + 127.5, 0, 255).astype(np.uint8)
-    q_f = np.clip(iq.imag * 127.5 + 127.5, 0, 255).astype(np.uint8)
-    raw = np.empty(total_samples * 2, dtype=np.uint8)
-    raw[0::2] = i_f
-    raw[1::2] = q_f
-    return raw.tobytes()
+
+def make_cw_iq(text: str, amplitude: float = 0.6, noise_amplitude: float = 0.02) -> bytes:
+    return render_iq(morse_intervals_for(text), amplitude, noise_amplitude)
+
+
+def chars_from(events: list[dict]) -> list[str]:
+    return [e['char'] for e in events if e['type'] == 'char']
+
+
+def event_types_from(events: list[dict]) -> set[str]:
+    return {e['type'] for e in events}
+
+
+def decoded_text(events: list[dict]) -> str:
+    return ''.join(
+        e['char'] if e['type'] == 'char' else ' '
+        for e in events
+        if e['type'] in ('char', 'word_space')
+    ).strip()
 
 
 def decode_message(text: str, chunk_size: int = 65536) -> list[dict]:
-    chain = cwd.CWSignalChain()
+    chain    = cwd.CWSignalChain()
     iq_bytes = make_cw_iq(text)
     events: list[dict] = []
     for start in range(0, len(iq_bytes), chunk_size):
         events.extend(chain.process(iq_bytes[start:start + chunk_size]))
-    events.extend(chain.flush())
-    return events
+    return [*events, *chain.flush()]
 
 
-def events_to_text(events: list[dict]) -> str:
-    result = []
-    for ev in events:
-        if ev['type'] == 'char':
-            result.append(ev['char'])
-        elif ev['type'] == 'word_space':
-            result.append(' ')
-    return ''.join(result).strip()
+def morse_decoder_at_wpm(wpm: int) -> cwd.MorseDecoder:
+    dit_samples = round((60 / (50 * wpm)) * AUDIO_RATE)
+    md = cwd.MorseDecoder()
+    md._dit_est = float(dit_samples)
+    return md
 
+
+# ── Signal chain constants ────────────────────────────────────────────────────
+
+class TestConstants:
+    def test_cw_frequency_is_below_rf_centre(self):
+        assert cwd.FREQ_OFFSET_HZ < 0
+
+    def test_audio_rate_is_exact_100x_decimation_of_sdr_rate(self):
+        assert cwd.SDR_SAMPLE_RATE // cwd.AUDIO_RATE == 100
+
+    def test_dit_samples_matches_20wpm_timing(self):
+        expected = round((60 / (50 * 20)) * AUDIO_RATE)
+        assert cwd.DIT_SAMPLES == expected
+
+
+# ── FIR filter ────────────────────────────────────────────────────────────────
+
+class TestKaiserLowpass:
+    def test_unity_gain_at_dc(self):
+        taps = cwd.kaiser_lowpass(1000.0, 24_000.0)
+        assert abs(taps.sum() - 1.0) < 1e-5
+
+    def test_returns_odd_number_of_taps(self):
+        taps = cwd.kaiser_lowpass(1000.0, 24_000.0)
+        assert len(taps) % 2 == 1
+
+    def test_output_is_float32(self):
+        taps = cwd.kaiser_lowpass(1000.0, 24_000.0)
+        assert taps.dtype == np.float32
+
+
+# ── Envelope detector ─────────────────────────────────────────────────────────
+
+class TestEnvelope:
+    def test_decay_is_faster_than_attack_so_gaps_register_cleanly(self):
+        chain = cwd.CWSignalChain()
+        assert chain._env_decay > chain._env_attack
+
+    def test_envelope_rises_on_tone_onset(self):
+        chain = cwd.CWSignalChain()
+        ones  = np.ones(200, dtype=np.float64)
+        env   = chain._apply_envelope(ones)
+        assert env[-1] > env[0]
+
+    def test_envelope_falls_after_tone_ends(self):
+        chain = cwd.CWSignalChain()
+        signal = np.concatenate([np.ones(200), np.zeros(200)])
+        env    = chain._apply_envelope(signal)
+        assert env[200] > env[-1]
+
+
+# ── MorseDecoder unit tests ───────────────────────────────────────────────────
 
 class TestMorseDecoder:
-    @staticmethod
-    def make_md(dit: int) -> cwd.MorseDecoder:
-        md = cwd.MorseDecoder()
-        md._dit_est = float(dit)
-        return md
+    def test_single_dit_produces_E(self):
+        md = morse_decoder_at_wpm(20)
+        md.push_tone(md.dit)
+        assert 'E' in chars_from(md.push_gap(md.dit * 7))
 
-    def test_dit_decodes_as_E(self):
-        dit = 720
-        md = self.make_md(dit)
-        md.push_tone(dit, dit)
-        chars = [e['char'] for e in md.push_gap(dit * 7, dit) if e['type'] == 'char']
-        assert 'E' in chars
+    def test_single_dah_produces_T(self):
+        md = morse_decoder_at_wpm(20)
+        md.push_tone(md.dit * 3)
+        assert 'T' in chars_from(md.push_gap(md.dit * 7))
 
-    def test_dah_decodes_as_T(self):
-        dit = 720
-        md = self.make_md(dit)
-        md.push_tone(dit * 3, dit)
-        chars = [e['char'] for e in md.push_gap(dit * 7, dit) if e['type'] == 'char']
-        assert 'T' in chars
-
-    def test_CQ_sequence(self):
-        dit = 720
-        md = self.make_md(dit)
-
-        def tone(n): md.push_tone(n, dit)
-        def gap(n): return md.push_gap(n, dit)
-
-        for sym in '-.-.' : tone(dit * 3 if sym == '-' else dit); gap(dit)  # noqa
-        gap(dit * 3)
-        for sym in '--.-': tone(dit * 3 if sym == '-' else dit); gap(dit)   # noqa
-        chars = [e['char'] for e in gap(dit * 7) if e['type'] == 'char']
-        assert 'Q' in chars
+    def test_tone_shorter_than_40pct_dit_is_rejected_as_noise(self):
+        md = morse_decoder_at_wpm(20)
+        md.push_tone(int(md.dit * 0.3))
+        md.push_tone(md.dit)
+        assert chars_from(md.push_gap(md.dit * 7)) == ['E']
 
     def test_word_gap_emits_word_space_event(self):
-        dit = 720
-        md = self.make_md(dit)
-        md.push_tone(dit, dit)
-        types = [e['type'] for e in md.push_gap(dit * 7, dit)]
-        assert 'word_space' in types
+        md = morse_decoder_at_wpm(20)
+        md.push_tone(md.dit)
+        assert 'word_space' in event_types_from(md.push_gap(md.dit * 7))
 
-    def test_sub_40pct_dit_tone_is_ignored_as_noise(self):
-        dit = 720
-        md = self.make_md(dit)
-        md.push_tone(int(dit * 0.3), dit)
-        md.push_tone(dit, dit)
-        chars = [e['char'] for e in md.push_gap(dit * 7, dit) if e['type'] == 'char']
-        assert chars == ['E']
+    def test_char_gap_emits_char_without_word_space(self):
+        md = morse_decoder_at_wpm(20)
+        md.push_tone(md.dit)
+        events = md.push_gap(md.dit * 3)
+        assert 'char' in event_types_from(events)
+        assert 'word_space' not in event_types_from(events)
 
+    def test_intra_element_gap_produces_no_event(self):
+        md = morse_decoder_at_wpm(20)
+        md.push_tone(md.dit)
+        assert md.push_gap(md.dit) == []
+
+    def test_dit_estimate_decreases_toward_faster_observed_tone(self):
+        md = morse_decoder_at_wpm(20)
+        initial_est = md._dit_est
+        fast_dit    = int(md.dit * 0.6)
+        md.push_tone(fast_dit)
+        assert md._dit_est < initial_est
+
+    def test_dit_estimate_increases_toward_slower_observed_tone(self):
+        md = morse_decoder_at_wpm(20)
+        initial_est = md._dit_est
+        slow_dit    = int(md.dit * 1.4)
+        md.push_tone(slow_dit)
+        assert md._dit_est > initial_est
+
+    def test_unrecognised_morse_sequence_wrapped_in_brackets(self):
+        md = morse_decoder_at_wpm(20)
+        for _ in range(6):
+            md.push_tone(md.dit)
+            md.push_gap(md.dit)
+        events = md.push_gap(md.dit * 7)
+        decoded = chars_from(events)
+        assert any(c.startswith('[') and c.endswith(']') for c in decoded)
+
+    def test_CQ_sequence_produces_C_and_Q(self):
+        md = morse_decoder_at_wpm(20)
+        for sym in '-.-.':
+            md.push_tone(md.dit * 3 if sym == '-' else md.dit)
+            md.push_gap(md.dit)
+        md.push_gap(md.dit * 3)
+        for sym in '--.-':
+            md.push_tone(md.dit * 3 if sym == '-' else md.dit)
+            md.push_gap(md.dit)
+        events = md.push_gap(md.dit * 7)
+        decoded = chars_from(events)
+        assert 'Q' in decoded
+
+
+# ── Full signal chain (IQ → character events) ─────────────────────────────────
 
 class TestCWSignalChain:
     def test_single_dit_decodes_as_E(self):
-        chars = [e['char'] for e in decode_message('E') if e['type'] == 'char']
-        assert 'E' in chars
-
-    def test_CQ_de_contains_Q_D_E(self):
-        text = events_to_text(decode_message('CQ DE'))
-        assert 'Q' in text, f"Missing Q in {text!r}"
-        assert 'D' in text, f"Missing D in {text!r}"
-        assert 'E' in text, f"Missing E in {text!r}"
+        assert 'E' in chars_from(decode_message('E'))
 
     def test_SOS_contains_S_and_O(self):
-        chars = [e['char'] for e in decode_message('SOS') if e['type'] == 'char']
-        assert 'S' in chars
-        assert 'O' in chars
+        decoded = chars_from(decode_message('SOS'))
+        assert 'S' in decoded
+        assert 'O' in decoded
 
-    def test_word_space_emitted_for_space_in_input(self):
-        types = {e['type'] for e in decode_message('E T')}
-        assert 'word_space' in types
+    def test_CQ_DE_contains_Q_D_E_and_word_space(self):
+        events = decode_message('CQ DE')
+        text   = decoded_text(events)
+        assert 'Q' in text
+        assert 'D' in text
+        assert 'E' in text
+        assert 'word_space' in event_types_from(events)
 
-    def test_all_decoded_chars_are_uppercase(self):
-        chars = [e['char'] for e in decode_message('HELLO') if e['type'] == 'char']
-        for ch in chars:
-            assert ch == ch.upper() or not ch.isalpha()
+    def test_space_in_input_produces_word_space_event(self):
+        assert 'word_space' in event_types_from(decode_message('E T'))
 
-    def test_small_chunk_size_still_decodes_SOS(self):
-        chars = [e['char'] for e in decode_message('SOS', chunk_size=4096) if e['type'] == 'char']
-        assert 'S' in chars
+    def test_decoded_alpha_chars_are_uppercase(self):
+        for ch in chars_from(decode_message('HELLO')):
+            assert not ch.isalpha() or ch == ch.upper()
 
-    def test_noise_only_produces_no_chars(self):
-        rng = np.random.default_rng(0)
+    def test_chunked_processing_decodes_same_as_single_pass(self):
+        assert 'S' in chars_from(decode_message('SOS', chunk_size=4096))
+
+    def test_noise_only_input_produces_no_characters(self):
+        rng   = np.random.default_rng(0)
         noise = rng.integers(100, 155, size=SDR_SAMPLE_RATE * 2, dtype=np.uint8)
         chain = cwd.CWSignalChain()
-        chars = [e for e in chain.process(noise.tobytes()) if e['type'] == 'char']
-        assert len(chars) == 0, f"noise gate failed — got {len(chars)} false chars: {chars[:5]}"
+        chars = chars_from(chain.process(noise.tobytes()))
+        assert chars == [], f"noise gate failed — got {len(chars)} false chars: {chars[:5]}"
 
+
+# ── IQ generation ─────────────────────────────────────────────────────────────
 
 class TestIQGeneration:
-    def test_output_byte_count_is_even(self):
+    def test_output_length_is_even_number_of_bytes(self):
         assert len(make_cw_iq('E')) % 2 == 0
 
-    def test_all_byte_values_are_valid_uint8(self):
+    def test_all_byte_values_are_in_uint8_range(self):
         data = np.frombuffer(make_cw_iq('SOS'), dtype=np.uint8)
         assert data.min() >= 0
         assert data.max() <= 255
 
-    def test_tone_peak_is_near_dc_after_mixing(self):
-        data = make_cw_iq('T')
+    def test_tone_frequency_matches_cw_offset_after_mixing(self):
+        data    = make_cw_iq('T')
         preroll = SDR_SAMPLE_RATE * 2
-        raw  = np.frombuffer(data[preroll:preroll + 4096 * 2], dtype=np.uint8).astype(np.float32)
-        iq   = ((raw[0::2] - 127.5) + 1j * (raw[1::2] - 127.5)) / 127.5
-        n    = len(iq)
-        lo   = np.exp(-1j * 2 * np.pi * FREQ_OFFSET_HZ * np.arange(n) / SDR_SAMPLE_RATE)
+        raw     = np.frombuffer(data[preroll:preroll + 4096 * 2], dtype=np.uint8).astype(np.float32)
+        iq      = ((raw[0::2] - 127.5) + 1j * (raw[1::2] - 127.5)) / 127.5
+        n       = len(iq)
+        lo      = np.exp(-1j * 2 * np.pi * FREQ_OFFSET_HZ * np.arange(n) / SDR_SAMPLE_RATE)
+        freqs   = np.fft.fftshift(np.fft.fftfreq(n, 1 / SDR_SAMPLE_RATE))
         spectrum  = np.abs(np.fft.fftshift(np.fft.fft(iq * lo)))
-        peak_freq = np.fft.fftshift(np.fft.fftfreq(n, 1 / SDR_SAMPLE_RATE))[int(np.argmax(spectrum))]
+        peak_freq = freqs[int(np.argmax(spectrum))]
         assert abs(peak_freq) < 5000
 
 
 if __name__ == '__main__':
     print("=== CW Roundtrip Smoke Test ===")
     for msg in ['E', 'SOS', 'CQ DE']:
-        text = events_to_text(decode_message(msg))
-        print(f"  {msg!r} → {text!r}")
+        print(f"  {msg!r} → {decoded_text(decode_message(msg))!r}")

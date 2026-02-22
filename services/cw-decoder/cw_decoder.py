@@ -45,8 +45,7 @@ def kaiser_lowpass(cutoff: float, sample_rate: float, duration: float = 0.001, b
         sinc = np.where(x == 0, norm_cut, np.sin(np.pi * x * norm_cut) / (np.pi * x))
     window = np.kaiser(num_taps, beta)
     taps   = sinc * window
-    taps  /= taps.sum()
-    return taps.astype(np.float32)
+    return (taps / taps.sum()).astype(np.float32)
 
 
 _taps1 = kaiser_lowpass(AUDIO_RATE / 2, SDR_SAMPLE_RATE)
@@ -68,7 +67,9 @@ class LOOscillator:
         sr, si = self._step_re, self._step_im
         for i in range(n):
             out[i] = complex(re, im)
-            re, im = re * sr - im * si, re * si + im * sr
+            new_re = re * sr - im * si
+            new_im = re * si + im * sr
+            re, im = new_re, new_im
             self._norm_ctr += 1
             if self._norm_ctr >= 1000:
                 mag = (re * re + im * im) ** 0.5
@@ -81,6 +82,7 @@ class LOOscillator:
 
 class CWSignalChain:
     _LOG_INTERVAL_SEC = 60.0
+    _MIN_SNR_RATIO    = 1.8
 
     def __init__(self) -> None:
         self._lo      = LOOscillator(FREQ_OFFSET_HZ, SDR_SAMPLE_RATE)
@@ -88,61 +90,44 @@ class CWSignalChain:
         self._zi1_im  = np.zeros(len(_taps1) - 1)
         self._zi2_re  = np.zeros(len(_taps2) - 1)
         self._zi2_im  = np.zeros(len(_taps2) - 1)
-        self._env_attack = float(1 - np.exp(-1 / (0.0005 * AUDIO_RATE)))
-        self._env_decay  = float(1 - np.exp(-1 / (0.0002 * AUDIO_RATE)))
-        self._env_state  = 0.0
-        self._window: deque[float] = deque(maxlen=AUDIO_RATE * 3)
-        self._threshold     = 0.05
+        self._env_attack  = float(1 - np.exp(-1 / (0.0005 * AUDIO_RATE)))
+        self._env_decay   = float(1 - np.exp(-1 / (0.0002 * AUDIO_RATE)))
+        self._env_state   = 0.0
+        self._window      = deque[float](maxlen=AUDIO_RATE * 3)
+        self._threshold   = 0.05
+        self._hyst_frac   = 0.10
         self._threshold_ctr = 0
-        self._hyst_frac     = 0.10
-        self._morse         = MorseDecoder()
-        self._tone_on       = False
-        self._tone_start    = 0
-        self._gap_start     = 0
-        self._clock         = 0
+        self._last_log_ts = time.monotonic()
+        self._morse       = MorseDecoder()
+        self._tone_on     = False
+        self._tone_start  = 0
+        self._gap_start   = 0
+        self._clock       = 0
 
-    _MIN_SNR_RATIO = 1.8
-
-    def _update_threshold(self) -> None:
-        if len(self._window) < 20:
-            return
-        arr  = np.array(self._window)
-        p5   = float(np.percentile(arr, 5))
-        p90  = float(np.percentile(arr, 90))
-        now  = time.monotonic()
-        if not hasattr(self, '_last_log_ts'):
-            self._last_log_ts = now
+    def _compute_threshold_from_window(self) -> float:
+        arr = np.array(self._window)
+        p5  = float(np.percentile(arr, 5))
+        p90 = float(np.percentile(arr, 90))
+        now = time.monotonic()
         if now - self._last_log_ts >= self._LOG_INTERVAL_SEC:
             self._last_log_ts = now
             snr = p90 / p5 if p5 > 1e-9 else 0
             log.info("threshold p5=%.4f p90=%.4f snr=%.2fx thr=%.4f", p5, p90, snr, self._threshold)
         if p5 < 1e-9:
-            return
+            return self._threshold
         if p90 / p5 < self._MIN_SNR_RATIO:
-            self._threshold = p90 * 10
-            return
-        self._threshold = p5 + (p90 - p5) * 0.5
+            return p90 * 10
+        return p5 + (p90 - p5) * 0.5
 
-    def process(self, raw: bytes) -> list[dict]:
-        from scipy.signal import lfilter
+    def _update_threshold(self) -> None:
+        if len(self._window) >= 20:
+            self._threshold = self._compute_threshold_from_window()
 
-        samples = np.frombuffer(raw, dtype=np.uint8).astype(np.float32)
-        if len(samples) & 1:
-            samples = samples[:-1]
-        iq = ((samples[0::2] - 127.5) + 1j * (samples[1::2] - 127.5)) / 127.5
-        iq = iq.astype(np.complex64)
+    def _schmitt_thresholds(self) -> tuple[float, float]:
+        hyst = self._threshold * self._hyst_frac
+        return self._threshold + hyst, max(self._threshold - hyst, 0.001)
 
-        mixed = iq * self._lo.generate(len(iq))
-
-        re1, self._zi1_re = lfilter(_taps1, 1.0, mixed.real, zi=self._zi1_re)
-        im1, self._zi1_im = lfilter(_taps1, 1.0, mixed.imag, zi=self._zi1_im)
-        stage1 = (re1 + 1j * im1)[DECIMATE1 - 1::DECIMATE1]
-
-        re2, self._zi2_re = lfilter(_taps2, 1.0, stage1.real, zi=self._zi2_re)
-        im2, self._zi2_im = lfilter(_taps2, 1.0, stage1.imag, zi=self._zi2_im)
-        audio = (re2 + 1j * im2)[DECIMATE2 - 1::DECIMATE2]
-
-        mags   = np.abs(audio).astype(np.float64)
+    def _apply_envelope(self, mags: np.ndarray) -> np.ndarray:
         attack = self._env_attack
         decay  = self._env_decay
         env    = np.empty_like(mags)
@@ -152,32 +137,48 @@ class CWSignalChain:
             state += alpha * (m - state)
             env[i] = state
         self._env_state = float(state)
+        return env
 
+    def process(self, raw: bytes) -> list[dict]:
+        from scipy.signal import lfilter
+
+        samples = np.frombuffer(raw, dtype=np.uint8).astype(np.float32)
+        if len(samples) & 1:
+            samples = samples[:-1]
+        iq    = ((samples[0::2] - 127.5) + 1j * (samples[1::2] - 127.5)) / 127.5
+        mixed = iq.astype(np.complex64) * self._lo.generate(len(iq))
+
+        re1, self._zi1_re = lfilter(_taps1, 1.0, mixed.real, zi=self._zi1_re)
+        im1, self._zi1_im = lfilter(_taps1, 1.0, mixed.imag, zi=self._zi1_im)
+        stage1 = (re1 + 1j * im1)[DECIMATE1 - 1::DECIMATE1]
+
+        re2, self._zi2_re = lfilter(_taps2, 1.0, stage1.real, zi=self._zi2_re)
+        im2, self._zi2_im = lfilter(_taps2, 1.0, stage1.imag, zi=self._zi2_im)
+        audio = (re2 + 1j * im2)[DECIMATE2 - 1::DECIMATE2]
+
+        env = self._apply_envelope(np.abs(audio).astype(np.float64))
         self._window.extend(env[::4].tolist())
 
+        return self._detect_tones(env)
+
+    def _detect_tones(self, env: np.ndarray) -> list[dict]:
         events: list[dict] = []
-        thr      = self._threshold
-        hyst     = thr * self._hyst_frac
-        high_thr = thr + hyst
-        low_thr  = max(thr - hyst, 0.001)
+        high_thr, low_thr = self._schmitt_thresholds()
 
         for v in env:
             self._threshold_ctr += 1
             if self._threshold_ctr >= THRESHOLD_UPDATE_INTERVAL:
                 self._threshold_ctr = 0
                 self._update_threshold()
-                thr      = self._threshold
-                hyst     = thr * self._hyst_frac
-                high_thr = thr + hyst
-                low_thr  = max(thr - hyst, 0.001)
+                high_thr, low_thr = self._schmitt_thresholds()
 
             if not self._tone_on and v > high_thr:
                 if self._gap_start > 0:
-                    events.extend(self._morse.push_gap(self._clock - self._gap_start, DIT_SAMPLES))
+                    events.extend(self._morse.push_gap(self._clock - self._gap_start))
                 self._tone_on    = True
                 self._tone_start = self._clock
             elif self._tone_on and v < low_thr:
-                self._morse.push_tone(self._clock - self._tone_start, DIT_SAMPLES)
+                self._morse.push_tone(self._clock - self._tone_start)
                 self._tone_on   = False
                 self._gap_start = self._clock
             self._clock += 1
@@ -185,14 +186,13 @@ class CWSignalChain:
         return events
 
     def flush(self) -> list[dict]:
-        events = []
         if self._tone_on:
-            self._morse.push_tone(self._clock - self._tone_start, DIT_SAMPLES)
+            self._morse.push_tone(self._clock - self._tone_start)
             self._tone_on   = False
             self._gap_start = self._clock
         if self._gap_start > 0:
-            events.extend(self._morse.push_gap(DIT_SAMPLES * 7, DIT_SAMPLES))
-        return events
+            return self._morse.push_gap(DIT_SAMPLES * 7)
+        return []
 
 
 MORSE_CODE: dict[str, str] = {
@@ -229,7 +229,7 @@ class MorseDecoder:
     def dit(self) -> int:
         return max(self._DIT_MIN, min(self._DIT_MAX, int(self._dit_est)))
 
-    def push_tone(self, duration: int, _dit_ignored: int) -> None:
+    def push_tone(self, duration: int) -> None:
         dit = self.dit
         if duration < dit * 0.4:
             return
@@ -238,23 +238,20 @@ class MorseDecoder:
         observed = duration if is_dit else duration / 3.0
         self._dit_est += self._DIT_ALPHA * (observed - self._dit_est)
 
-    def push_gap(self, duration: int, _dit_ignored: int) -> list[dict]:
-        events: list[dict] = []
-        dit  = self.dit
-        dits = duration / dit
+    def push_gap(self, duration: int) -> list[dict]:
+        dits = duration / self.dit
         ts   = datetime.now(UTC).isoformat()
         if dits >= WORD_GAP_DITS:
-            events.extend(self._flush(ts))
-            events.append({'type': 'word_space', 'ts': ts})
-        elif dits >= CHAR_GAP_DITS:
-            events.extend(self._flush(ts))
-        return events
+            return [*self._flush(ts), {'type': 'word_space', 'ts': ts}]
+        if dits >= CHAR_GAP_DITS:
+            return self._flush(ts)
+        return []
 
     def _flush(self, ts: str) -> list[dict]:
         if not self._symbols:
             return []
-        code = ''.join(self._symbols)
-        char = MORSE_CODE.get(code, f'[{code}]')
+        code          = ''.join(self._symbols)
+        char          = MORSE_CODE.get(code, f'[{code}]')
         self._symbols = []
         wpm = int(round(60 / (50 * (self._dit_est / AUDIO_RATE)))) if self._dit_est > 0 else 0
         log.debug("decoded %r from %r  dit_est=%.0f samp (%d WPM)", char, code, self._dit_est, wpm)
@@ -274,14 +271,17 @@ class Hub:
 
     async def broadcast(self, msg: dict) -> None:
         text = json.dumps(msg)
-        dead = []
-        for ws in list(self._clients):
-            try:
-                await ws.send_str(text)
-            except Exception:
-                dead.append(ws)
+        dead = [ws for ws in list(self._clients) if not await self._try_send(ws, text)]
         for ws in dead:
             self.remove(ws)
+
+    @staticmethod
+    async def _try_send(ws: web.WebSocketResponse, text: str) -> bool:
+        try:
+            await ws.send_str(text)
+            return True
+        except Exception:
+            return False
 
     async def set_connected(self, connected: bool) -> None:
         self._connected = connected
@@ -351,7 +351,17 @@ async def iq_reader(hub: Hub) -> None:
         await asyncio.sleep(5)
 
 
-_level_map = {'log': log.info, 'info': log.info, 'warn': log.warning, 'error': log.error}
+_LOG_LEVEL_MAP = {'log': log.info, 'info': log.info, 'warn': log.warning, 'error': log.error}
+
+
+def _log_browser_entries(entries: object) -> None:
+    if not isinstance(entries, list):
+        entries = [entries]
+    for entry in entries:
+        if isinstance(entry, dict):
+            _LOG_LEVEL_MAP.get(str(entry.get('level', 'log')), log.info)(
+                '[%s] %s', entry.get('source', 'browser'), entry.get('message', '')
+            )
 
 
 async def ws_handler(request: web.Request) -> web.WebSocketResponse:
@@ -381,7 +391,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                             if now - _last_log.get(key, 0) < LOG_THROTTLE_SEC:
                                 continue
                             _last_log[key] = now
-                        _level_map.get(level, log.info)('[%s] %s', source, text)
+                        _LOG_LEVEL_MAP.get(level, log.info)('[%s] %s', source, text)
                 except Exception:
                     pass
     finally:
@@ -392,21 +402,12 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
 async def log_ws_handler(request: web.Request) -> web.WebSocketResponse:
     ws = web.WebSocketResponse()
     await ws.prepare(request)
-    level_map = {'log': log.info, 'info': log.info, 'warn': log.warning, 'error': log.error}
     async for msg in ws:
         if msg.type == web.WSMsgType.TEXT:
             try:
-                entries = json.loads(msg.data)
+                _log_browser_entries(json.loads(msg.data))
             except Exception:
-                continue
-            if not isinstance(entries, list):
-                entries = [entries]
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                level_map.get(str(entry.get('level', 'log')), log.info)(
-                    '[%s] %s', entry.get('source', 'browser'), entry.get('message', '')
-                )
+                pass
     return ws
 
 
