@@ -14,6 +14,9 @@ services:
     ports:
       - "1235:1235"   # TCP multiplexer (rtl_tcp-compatible)
       - "1236:1236"   # WebSocket IQ stream for browser
+      - "1237:1237"   # Audio mux: CW (complex64 @ 24 kHz)
+      - "1238:1238"   # Audio mux: SSTV (complex64 @ 24 kHz)
+      - "1239:1239"   # Audio mux: EasyPal (complex64 @ 24 kHz)
     environment:
       RTL_TCP_HOST: "127.0.0.1"
       RTL_TCP_PORT: "1234"
@@ -30,13 +33,9 @@ services:
     restart: unless-stopped
     depends_on:
       - rtl-bridge
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
     environment:
       MUX_HOST: "rtl-bridge"
-      MUX_PORT: "1235"
+      MUX_PORT: "1237"
       WS_PORT: "8765"
 
   # ── SSTV decoder ──────────────────────────────────────────────────────────
@@ -49,13 +48,9 @@ services:
     restart: unless-stopped
     depends_on:
       - rtl-bridge
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
     environment:
       MUX_HOST: "rtl-bridge"
-      MUX_PORT: "1235"
+      MUX_PORT: "1238"
       WS_PORT: "8766"
 
   # ── EasyPal decoder ───────────────────────────────────────────────────────
@@ -68,13 +63,9 @@ services:
     restart: unless-stopped
     depends_on:
       - rtl-bridge
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
     environment:
       MUX_HOST: "rtl-bridge"
-      MUX_PORT: "1235"
+      MUX_PORT: "1239"
       WS_PORT: "8767"
 
   # ── Web UI ────────────────────────────────────────────────────────────────

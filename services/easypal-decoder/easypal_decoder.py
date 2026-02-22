@@ -43,21 +43,13 @@ from PIL import Image
 # ── Configuration ──────────────────────────────────────────────────────────────
 
 MUX_HOST = os.environ.get("MUX_HOST", "rtl-bridge")
-MUX_PORT = int(os.environ.get("MUX_PORT", "1235"))
+MUX_PORT = int(os.environ.get("MUX_PORT", "1239"))
 WS_PORT  = int(os.environ.get("WS_PORT",  "8767"))
 
-SDR_SAMPLE_RATE   = 2_400_000
-SDR_CENTER_HZ     = 139_175_000
-LO_OFFSET_HZ      = 125_000_000
-RF_CENTER_HZ      = SDR_CENTER_HZ - LO_OFFSET_HZ    # 14_175_000
-EASYPAL_FREQ_HZ   = 14_233_000
-EASYPAL_OFFSET_HZ = EASYPAL_FREQ_HZ - RF_CENTER_HZ  # +58_000
+EASYPAL_FREQ_HZ = 14_233_000
 
-# Two-stage decimation: 2_400_000 → 240_000 → 24_000
-DECIMATE1    = 10
-DECIMATE2    = 10
-INTERMEDIATE = SDR_SAMPLE_RATE // DECIMATE1   # 240_000
-AUDIO_RATE   = INTERMEDIATE // DECIMATE2       # 24_000
+# Audio stream constants -- received pre-decimated at AUDIO_RATE from rtl-bridge AudioMux
+AUDIO_RATE = 24_000
 
 # DRM Mode B physical layer constants
 DRM_RATE      = 12_000    # internal DRM sample rate
@@ -86,75 +78,21 @@ MSC_CELLS_PER_FRAME = 352
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [easypal] %(message)s")
 log = logging.getLogger(__name__)
 
-# ── FIR filter builder ─────────────────────────────────────────────────────────
-
-def kaiser_lowpass(cutoff: float, sample_rate: float, duration: float = 0.001, beta: float = 8.0) -> np.ndarray:
-    num_taps = int(duration * sample_rate) | 1
-    center   = (num_taps - 1) / 2
-    norm_cut = 2.0 * cutoff / sample_rate
-    x        = np.arange(num_taps) - center
-    with np.errstate(invalid='ignore', divide='ignore'):
-        sinc = np.where(x == 0, norm_cut, np.sin(np.pi * x * norm_cut) / (np.pi * x))
-    taps = sinc * np.kaiser(num_taps, beta)
-    return (taps / taps.sum()).astype(np.float32)
-
-
-_taps1 = kaiser_lowpass(INTERMEDIATE / 2, SDR_SAMPLE_RATE)
-_taps2 = kaiser_lowpass(AUDIO_RATE   / 2, INTERMEDIATE)
-
-# ── LO oscillator ─────────────────────────────────────────────────────────────
-
-class LOOscillator:
-    """Phase-continuous complex LO for frequency downconversion."""
-
-    def __init__(self, freq_hz: float, sample_rate: float) -> None:
-        self._step  = 2 * np.pi * freq_hz / sample_rate
-        self._phase = 0.0
-
-    def generate(self, n: int) -> np.ndarray:
-        phases      = self._phase + self._step * np.arange(n)
-        self._phase = float(phases[-1] + self._step) % (2 * np.pi)
-        return np.exp(-1j * phases).astype(np.complex64)
-
 # ── IQ → audio signal chain ────────────────────────────────────────────────────
 
 class IQSignalChain:
-    """Decimates 2.4 MHz IQ to 24 kHz FM-demodulated audio."""
+    """FM discriminator for pre-decimated complex64@24kHz audio from rtl-bridge AudioMux."""
 
     def __init__(self) -> None:
-        self._lo      = LOOscillator(EASYPAL_OFFSET_HZ, SDR_SAMPLE_RATE)
-        self._zi1_re  = np.zeros(len(_taps1) - 1)
-        self._zi1_im  = np.zeros(len(_taps1) - 1)
-        self._zi2_re  = np.zeros(len(_taps2) - 1)
-        self._zi2_im  = np.zeros(len(_taps2) - 1)
         self._prev_re = 0.0
         self._prev_im = 0.0
 
     def process(self, raw: bytes) -> np.ndarray:
-        """Returns FM-demodulated audio at 24 kHz (instantaneous freq in Hz)."""
-        from scipy.signal import lfilter
-
-        samples = np.frombuffer(raw, dtype=np.uint8).astype(np.float32)
-        if len(samples) & 1:
-            samples = samples[:-1]
-        iq = ((samples[0::2] - 127.5) + 1j * (samples[1::2] - 127.5)) / 127.5
-        iq = iq.astype(np.complex64)
-
-        lo    = self._lo.generate(len(iq))
-        mixed = iq * lo
-
-        re1, self._zi1_re = lfilter(_taps1, 1.0, mixed.real, zi=self._zi1_re)
-        im1, self._zi1_im = lfilter(_taps1, 1.0, mixed.imag, zi=self._zi1_im)
-        stage1 = (re1 + 1j * im1)[DECIMATE1 - 1::DECIMATE1]
-
-        re2, self._zi2_re = lfilter(_taps2, 1.0, stage1.real, zi=self._zi2_re)
-        im2, self._zi2_im = lfilter(_taps2, 1.0, stage1.imag, zi=self._zi2_im)
-        audio = (re2 + 1j * im2)[DECIMATE2 - 1::DECIMATE2]
-
-        # FM discriminator
-        i_arr, q_arr = audio.real, audio.imag
-        prev_i       = np.empty(len(audio))
-        prev_q       = np.empty(len(audio))
+        """raw: complex64 bytes at AUDIO_RATE from rtl-bridge. Returns FM audio in Hz."""
+        audio_c = np.frombuffer(raw, dtype=np.complex64)
+        i_arr, q_arr = audio_c.real, audio_c.imag
+        prev_i       = np.empty(len(audio_c))
+        prev_q       = np.empty(len(audio_c))
         prev_i[0]    = self._prev_re
         prev_q[0]    = self._prev_im
         prev_i[1:]   = i_arr[:-1]
@@ -162,7 +100,6 @@ class IQSignalChain:
         if len(i_arr):
             self._prev_re = float(i_arr[-1])
             self._prev_im = float(q_arr[-1])
-
         cross = q_arr * prev_i - i_arr * prev_q
         dot   = i_arr * prev_i + q_arr * prev_q
         return (np.arctan2(cross, dot) * AUDIO_RATE / (2 * np.pi)).astype(np.float32)
@@ -691,12 +628,12 @@ async def iq_reader(hub: Hub) -> None:
 
     while True:
         try:
-            log.info("Connecting to TCP mux at %s:%d…", MUX_HOST, MUX_PORT)
+            log.info("Connecting to audio mux at %s:%d...", MUX_HOST, MUX_PORT)
             reader, writer = await asyncio.open_connection(MUX_HOST, MUX_PORT)
             header = await reader.readexactly(12)
-            if not header.startswith(b"RTL"):
+            if not header.startswith(b"AUD"):
                 raise ValueError(f"Unexpected header: {header!r}")
-            log.info("Connected. Listening for EasyPal on %.3f MHz…", EASYPAL_FREQ_HZ / 1e6)
+            log.info("Connected. Listening for EasyPal on %.3f MHz...", EASYPAL_FREQ_HZ / 1e6)
             await hub.set_connected(True)
 
             queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=4)

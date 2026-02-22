@@ -13,31 +13,21 @@ import numpy as np
 from aiohttp import web
 
 MUX_HOST = os.environ.get("MUX_HOST", "rtl-bridge")
-MUX_PORT = int(os.environ.get("MUX_PORT", "1235"))
+MUX_PORT = int(os.environ.get("MUX_PORT", "1237"))
 WS_PORT  = int(os.environ.get("WS_PORT",  "8765"))
 
-SDR_SAMPLE_RATE = 2_400_000
-SDR_CENTER_HZ   = 139_175_000
-LO_OFFSET_HZ    = 125_000_000
-RF_CENTER_HZ    = SDR_CENTER_HZ - LO_OFFSET_HZ
-CW_FREQ_HZ      = 14_029_000
-FREQ_OFFSET_HZ  = CW_FREQ_HZ - RF_CENTER_HZ
-
-# Two-stage 100× decimation: 2.4 MHz → 24 kHz
-DECIMATE1    = 10
-DECIMATE2    = 10
-INTERMEDIATE = SDR_SAMPLE_RATE // DECIMATE1   # 240_000
-AUDIO_RATE   = INTERMEDIATE // DECIMATE2       # 24_000
+# Audio stream constants -- received pre-decimated at AUDIO_RATE from rtl-bridge AudioMux
+AUDIO_RATE  = 24_000
+CW_FREQ_HZ  = 14_029_000
 
 WPM         = 20
 DIT_SAMPLES = round((60 / (50 * WPM)) * AUDIO_RATE)
 
 THRESHOLD_UPDATE_INTERVAL = max(DIT_SAMPLES // 8, 50)
 
-# Bandpass half-bandwidth around the mixed-to-DC CW tone.
-# After mixing CW_FREQ_HZ to DC, keep only ±BP_HZ.
-# 500 Hz passes ±50 Hz operator drift and keying artefacts,
-# and rejects adjacent SSB / other CW stations.
+# Narrow bandpass half-bandwidth around DC (the CW tone has already been mixed
+# to DC by rtl-bridge's AudioDecimator). Keep only +/-BP_HZ.
+# 500 Hz passes +/-50 Hz operator drift and rejects adjacent SSB / other CW.
 BP_HZ = 500
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [cw] %(message)s")
@@ -57,59 +47,22 @@ def kaiser_lowpass(cutoff: float, sample_rate: float, duration: float = 0.001, b
     return (taps / taps.sum()).astype(np.float32)
 
 
-# Stage-1 anti-aliasing LPF (before first decimation)
-_taps1 = kaiser_lowpass(INTERMEDIATE / 2, SDR_SAMPLE_RATE)
-# Stage-2 anti-aliasing LPF (before second decimation)
-_taps2 = kaiser_lowpass(AUDIO_RATE   / 2, INTERMEDIATE)
-# Narrow bandpass at audio rate: keep only ±BP_HZ around DC (the mixed CW tone).
-# Longer filter (5 ms × 24 kHz = 120 taps) for steeper skirts.
+# Narrow bandpass at audio rate: keep only +/-BP_HZ around DC (the mixed CW tone).
+# Longer filter (5 ms x 24 kHz = 120 taps) for steeper skirts.
 _taps_bp = kaiser_lowpass(BP_HZ, AUDIO_RATE, duration=0.005, beta=8.0)
-
-
-class LOOscillator:
-    def __init__(self, freq_hz: float, sample_rate: float) -> None:
-        step          = 2 * np.pi * freq_hz / sample_rate
-        self._step_re = float(np.cos(step))
-        self._step_im = float(-np.sin(step))
-        self._re      = 1.0
-        self._im      = 0.0
-        self._norm_ctr = 0
-
-    def generate(self, n: int) -> np.ndarray:
-        out = np.empty(n, dtype=np.complex64)
-        re, im = self._re, self._im
-        sr, si = self._step_re, self._step_im
-        for i in range(n):
-            out[i] = complex(re, im)
-            new_re = re * sr - im * si
-            new_im = re * si + im * sr
-            re, im = new_re, new_im
-            self._norm_ctr += 1
-            if self._norm_ctr >= 1000:
-                mag = (re * re + im * im) ** 0.5
-                re /= mag
-                im /= mag
-                self._norm_ctr = 0
-        self._re, self._im = re, im
-        return out
 
 
 class CWSignalChain:
     _LOG_INTERVAL_SEC = 15.0   # log signal levels every 15 s for live diagnostics
 
     def __init__(self) -> None:
-        self._lo       = LOOscillator(FREQ_OFFSET_HZ, SDR_SAMPLE_RATE)
-        self._zi1_re   = np.zeros(len(_taps1)   - 1)
-        self._zi1_im   = np.zeros(len(_taps1)   - 1)
-        self._zi2_re   = np.zeros(len(_taps2)   - 1)
-        self._zi2_im   = np.zeros(len(_taps2)   - 1)
         self._zi_bp_re = np.zeros(len(_taps_bp) - 1)
         self._zi_bp_im = np.zeros(len(_taps_bp) - 1)
         self._env_attack  = float(1 - np.exp(-1 / (0.0005 * AUDIO_RATE)))
         self._env_decay   = float(1 - np.exp(-1 / (0.0002 * AUDIO_RATE)))
         self._env_state   = 0.0
         self._window      = deque[float](maxlen=AUDIO_RATE * 3)
-        self._env_max     = 0.0    # max envelope value since last log (signal level check)
+        self._env_max     = 0.0    # max envelope value since last log
         self._threshold   = 0.05
         self._hyst_frac   = 0.10
         self._threshold_ctr = 0
@@ -137,8 +90,6 @@ class CWSignalChain:
         if p10 < 1e-9:
             return self._threshold
         # Midpoint between noise floor (p10) and signal peak (p90).
-        # No SNR guard: the narrow bandpass has already rejected off-channel
-        # interference, so this ratio reflects real keying excursions.
         return p10 + (p90 - p10) * 0.5
 
     def _update_threshold(self) -> None:
@@ -162,26 +113,12 @@ class CWSignalChain:
         return env
 
     def process(self, raw: bytes) -> list[dict]:
+        """Process a chunk of complex64 audio bytes (pre-decimated to AUDIO_RATE by rtl-bridge)."""
         from scipy.signal import lfilter
 
-        samples = np.frombuffer(raw, dtype=np.uint8).astype(np.float32)
-        if len(samples) & 1:
-            samples = samples[:-1]
-        iq    = ((samples[0::2] - 127.5) + 1j * (samples[1::2] - 127.5)) / 127.5
-        mixed = iq.astype(np.complex64) * self._lo.generate(len(iq))
+        audio = np.frombuffer(raw, dtype=np.complex64)
 
-        # Stage 1: anti-alias LPF + decimate ×10
-        re1, self._zi1_re = lfilter(_taps1, 1.0, mixed.real, zi=self._zi1_re)
-        im1, self._zi1_im = lfilter(_taps1, 1.0, mixed.imag, zi=self._zi1_im)
-        stage1 = (re1 + 1j * im1)[DECIMATE1 - 1::DECIMATE1]
-
-        # Stage 2: anti-alias LPF + decimate ×10 → 24 kHz
-        re2, self._zi2_re = lfilter(_taps2, 1.0, stage1.real, zi=self._zi2_re)
-        im2, self._zi2_im = lfilter(_taps2, 1.0, stage1.imag, zi=self._zi2_im)
-        audio = (re2 + 1j * im2)[DECIMATE2 - 1::DECIMATE2]
-
-        # Stage 3: narrow bandpass ±BP_HZ — isolates target CW tone, rejects
-        # adjacent SSB / other CW stations that passed the wide anti-alias LPF.
+        # Narrow bandpass +/-BP_HZ around DC (CW tone already mixed to DC by rtl-bridge)
         re3, self._zi_bp_re = lfilter(_taps_bp, 1.0, audio.real, zi=self._zi_bp_re)
         im3, self._zi_bp_im = lfilter(_taps_bp, 1.0, audio.imag, zi=self._zi_bp_im)
         narrowband = re3 + 1j * im3
@@ -355,12 +292,12 @@ async def iq_reader(hub: Hub) -> None:
         chain  = CWSignalChain()
         writer = None
         try:
-            log.info("connecting to %s:%d…", MUX_HOST, MUX_PORT)
+            log.info("connecting to %s:%d...", MUX_HOST, MUX_PORT)
             reader, writer = await asyncio.open_connection(MUX_HOST, MUX_PORT)
             header = await reader.readexactly(12)
-            if not header.startswith(b"RTL"):
+            if not header.startswith(b"AUD"):
                 raise ValueError(f"unexpected header: {header!r}")
-            log.info("connected — decoding CW on %.3f MHz (±%d Hz bandpass)", CW_FREQ_HZ / 1e6, BP_HZ)
+            log.info("connected -- decoding CW on %.3f MHz (+/-%d Hz bandpass)", CW_FREQ_HZ / 1e6, BP_HZ)
             await hub.set_connected(True)
 
             queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=4)
@@ -377,7 +314,7 @@ async def iq_reader(hub: Hub) -> None:
             drain_task.cancel()
 
         except Exception as e:
-            log.warning("mux connection lost: %s, retrying in 5s…", e)
+            log.warning("mux connection lost: %s, retrying in 5s...", e)
         finally:
             if writer is not None:
                 with contextlib.suppress(Exception):
@@ -510,7 +447,7 @@ async def supervised_iq_reader(hub: Hub) -> None:
         except asyncio.CancelledError:
             break
         except Exception as e:
-            log.error("iq_reader crashed: %s — restarting in 5s", e)
+            log.error("iq_reader crashed: %s -- restarting in 5s", e)
             await asyncio.sleep(5)
 
 

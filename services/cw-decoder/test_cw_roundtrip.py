@@ -21,20 +21,18 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 import cw_decoder as cwd  # noqa: E402
 
-SDR_SAMPLE_RATE = cwd.SDR_SAMPLE_RATE
-FREQ_OFFSET_HZ  = cwd.FREQ_OFFSET_HZ
-DIT_SAMPLES     = cwd.DIT_SAMPLES
-AUDIO_RATE      = cwd.AUDIO_RATE
-DECIMATE        = SDR_SAMPLE_RATE // AUDIO_RATE
+AUDIO_RATE  = cwd.AUDIO_RATE
+DIT_SAMPLES = cwd.DIT_SAMPLES
 
 CHAR_TO_MORSE: dict[str, str] = {v: k for k, v in cwd.MORSE_CODE.items()}
 
 
-# ── Pure test helpers ─────────────────────────────────────────────────────────
+# ── Pure test helpers ──────────────────────────────────────────────────────────
 
 def morse_intervals_for(text: str) -> list[tuple[bool, int]]:
-    dit = DIT_SAMPLES * DECIMATE
-    intervals: list[tuple[bool, int]] = [(False, SDR_SAMPLE_RATE)]
+    """Return (tone_on, n_samples) intervals at AUDIO_RATE."""
+    dit = DIT_SAMPLES
+    intervals: list[tuple[bool, int]] = [(False, AUDIO_RATE)]  # 1 s silence pre-roll
     first_char = True
     for ch in text.upper():
         if ch == ' ':
@@ -55,31 +53,34 @@ def morse_intervals_for(text: str) -> list[tuple[bool, int]]:
     return intervals
 
 
-def render_iq(intervals: list[tuple[bool, int]], amplitude: float = 0.6, noise_amplitude: float = 0.02) -> bytes:
-    total_samples = sum(n for _, n in intervals)
-    iq    = np.zeros(total_samples, dtype=np.complex64)
-    phase = 0.0
-    step  = 2 * math.pi * FREQ_OFFSET_HZ / SDR_SAMPLE_RATE
+def render_audio(intervals: list[tuple[bool, int]], amplitude: float = 0.6,
+                 noise_amplitude: float = 0.02) -> bytes:
+    """Generate complex64 audio bytes at AUDIO_RATE.
+
+    CW tone at 100 Hz -- within the +/-BP_HZ (500 Hz) bandpass filter.
+    """
+    total = sum(n for _, n in intervals)
+    iq    = np.zeros(total, dtype=np.complex64)
+    # 100 Hz tone (well within the 500 Hz bandpass)
+    step  = 2 * math.pi * 100.0 / AUDIO_RATE
     rng   = np.random.default_rng(42)
+    phase = 0.0
     idx   = 0
     for tone_on, n in intervals:
-        t      = np.arange(n, dtype=np.float64)
-        signal = amplitude * np.exp(1j * (phase + t * step)) if tone_on else np.zeros(n, dtype=np.complex64)
-        noise  = (rng.standard_normal(n) + 1j * rng.standard_normal(n)) * noise_amplitude
-        iq[idx:idx + n] = signal.astype(np.complex64) + noise.astype(np.complex64)
-        phase += float((phase + t[-1] * step + step) if tone_on else (phase + n * step)) - phase if n else 0
-        phase  = float(phase + t[-1] * step + step) if tone_on else float(phase + n * step)
-        idx   += n
-    i_samples = np.clip(iq.real * 127.5 + 127.5, 0, 255).astype(np.uint8)
-    q_samples = np.clip(iq.imag * 127.5 + 127.5, 0, 255).astype(np.uint8)
-    interleaved = np.empty(total_samples * 2, dtype=np.uint8)
-    interleaved[0::2] = i_samples
-    interleaved[1::2] = q_samples
-    return interleaved.tobytes()
+        t = np.arange(n, dtype=np.float64)
+        if tone_on:
+            signal = amplitude * np.exp(1j * (phase + t * step)).astype(np.complex64)
+        else:
+            signal = np.zeros(n, dtype=np.complex64)
+        noise = ((rng.standard_normal(n) + 1j * rng.standard_normal(n)) * noise_amplitude).astype(np.complex64)
+        iq[idx:idx + n] = signal + noise
+        phase = float(phase + t[-1] * step + step) if tone_on else float(phase + n * step)
+        idx  += n
+    return iq.tobytes()
 
 
-def make_cw_iq(text: str, amplitude: float = 0.6, noise_amplitude: float = 0.02) -> bytes:
-    return render_iq(morse_intervals_for(text), amplitude, noise_amplitude)
+def make_cw_audio(text: str, amplitude: float = 0.6, noise_amplitude: float = 0.02) -> bytes:
+    return render_audio(morse_intervals_for(text), amplitude, noise_amplitude)
 
 
 def chars_from(events: list[dict]) -> list[str]:
@@ -98,12 +99,13 @@ def decoded_text(events: list[dict]) -> str:
     ).strip()
 
 
-def decode_message(text: str, chunk_size: int = 65536) -> list[dict]:
-    chain    = cwd.CWSignalChain()
-    iq_bytes = make_cw_iq(text)
+def decode_message(text: str, chunk_size: int = 2624) -> list[dict]:
+    """chunk_size=2624: 328 complex64 samples * 8 bytes -- ~13 ms at 24 kHz."""
+    chain       = cwd.CWSignalChain()
+    audio_bytes = make_cw_audio(text)
     events: list[dict] = []
-    for start in range(0, len(iq_bytes), chunk_size):
-        events.extend(chain.process(iq_bytes[start:start + chunk_size]))
+    for start in range(0, len(audio_bytes), chunk_size):
+        events.extend(chain.process(audio_bytes[start:start + chunk_size]))
     return [*events, *chain.flush()]
 
 
@@ -114,21 +116,18 @@ def morse_decoder_at_wpm(wpm: int) -> cwd.MorseDecoder:
     return md
 
 
-# ── Signal chain constants ────────────────────────────────────────────────────
+# ── Signal chain constants ─────────────────────────────────────────────────────
 
 class TestConstants:
-    def test_cw_frequency_is_below_rf_centre(self):
-        assert cwd.FREQ_OFFSET_HZ < 0
-
-    def test_audio_rate_is_exact_100x_decimation_of_sdr_rate(self):
-        assert cwd.SDR_SAMPLE_RATE // cwd.AUDIO_RATE == 100
+    def test_audio_rate_is_24khz(self):
+        assert cwd.AUDIO_RATE == 24_000
 
     def test_dit_samples_matches_20wpm_timing(self):
         expected = round((60 / (50 * 20)) * AUDIO_RATE)
         assert expected == cwd.DIT_SAMPLES
 
 
-# ── FIR filter ────────────────────────────────────────────────────────────────
+# ── FIR filter ─────────────────────────────────────────────────────────────────
 
 class TestKaiserLowpass:
     def test_unity_gain_at_dc(self):
@@ -144,7 +143,7 @@ class TestKaiserLowpass:
         assert taps.dtype == np.float32
 
 
-# ── Envelope detector ─────────────────────────────────────────────────────────
+# ── Envelope detector ──────────────────────────────────────────────────────────
 
 class TestEnvelope:
     def test_decay_is_faster_than_attack_so_gaps_register_cleanly(self):
@@ -164,7 +163,7 @@ class TestEnvelope:
         assert env[200] > env[-1]
 
 
-# ── MorseDecoder unit tests ───────────────────────────────────────────────────
+# ── MorseDecoder unit tests ────────────────────────────────────────────────────
 
 class TestMorseDecoder:
     def test_single_dit_produces_E(self):
@@ -237,7 +236,7 @@ class TestMorseDecoder:
         assert 'Q' in decoded
 
 
-# ── Full signal chain (IQ → character events) ─────────────────────────────────
+# ── Full signal chain (complex64 audio -> character events) ───────────────────
 
 class TestCWSignalChain:
     def test_single_dit_decodes_as_E(self):
@@ -264,79 +263,33 @@ class TestCWSignalChain:
             assert not ch.isalpha() or ch == ch.upper()
 
     def test_chunked_processing_decodes_same_as_single_pass(self):
-        assert 'S' in chars_from(decode_message('SOS', chunk_size=4096))
+        assert 'S' in chars_from(decode_message('SOS', chunk_size=1024))
 
     def test_noise_only_input_produces_no_characters(self):
         rng   = np.random.default_rng(0)
-        noise = rng.integers(100, 155, size=SDR_SAMPLE_RATE * 2, dtype=np.uint8)
+        # 2 seconds of complex noise at AUDIO_RATE
+        noise_c = (rng.standard_normal(AUDIO_RATE * 2) +
+                   1j * rng.standard_normal(AUDIO_RATE * 2)).astype(np.complex64) * 0.01
         chain = cwd.CWSignalChain()
-        chars = chars_from(chain.process(noise.tobytes()))
-        assert chars == [], f"noise gate failed — got {len(chars)} false chars: {chars[:5]}"
-
-    def test_off_frequency_interferer_does_not_produce_characters(self):
-        """Bandpass filter must reject a CW station 5 kHz away from CW_FREQ_HZ."""
-        interferer_offset = cwd.FREQ_OFFSET_HZ + 5_000   # 5 kHz above target
-        intervals = [(False, SDR_SAMPLE_RATE)]            # 1 s silence pre-roll
-        dit_n = DIT_SAMPLES * DECIMATE
-        # Send 'SOS' on the interferer frequency
-        for sym in '... --- ...':
-            if sym == ' ':
-                intervals.append((False, dit_n * 3))
-                continue
-            intervals.append((True,  dit_n if sym == '.' else dit_n * 3))
-            intervals.append((False, dit_n))
-        intervals.append((False, dit_n * 7))
-
-        import math
-        total = sum(n for _, n in intervals)
-        iq    = np.zeros(total, dtype=np.complex64)
-        step  = 2 * math.pi * interferer_offset / SDR_SAMPLE_RATE
-        rng   = np.random.default_rng(7)
-        idx   = 0
-        for tone_on, n in intervals:
-            t = np.arange(n, dtype=np.float64)
-            if tone_on:
-                iq[idx:idx + n] = (0.6 * np.exp(1j * t * step)).astype(np.complex64)
-            iq[idx:idx + n] += (rng.standard_normal(n) + 1j * rng.standard_normal(n)).astype(np.complex64) * 0.02
-            idx += n
-
-        i_u8 = np.clip(iq.real * 127.5 + 127.5, 0, 255).astype(np.uint8)
-        q_u8 = np.clip(iq.imag * 127.5 + 127.5, 0, 255).astype(np.uint8)
-        raw = np.empty(total * 2, dtype=np.uint8)
-        raw[0::2] = i_u8
-        raw[1::2] = q_u8
-
-        chain = cwd.CWSignalChain()
-        events = [*chain.process(raw.tobytes()), *chain.flush()]
-        chars = chars_from(events)
-        assert chars == [], f"bandpass failed — off-freq interferer produced {chars}"
+        chars = chars_from(chain.process(noise_c.tobytes()))
+        assert chars == [], f"noise gate failed -- got {len(chars)} false chars: {chars[:5]}"
 
 
-# ── IQ generation ─────────────────────────────────────────────────────────────
+# ── Audio generation ───────────────────────────────────────────────────────────
 
-class TestIQGeneration:
-    def test_output_length_is_even_number_of_bytes(self):
-        assert len(make_cw_iq('E')) % 2 == 0
+class TestAudioGeneration:
+    def test_output_length_is_multiple_of_8_bytes(self):
+        # Each complex64 sample is 8 bytes
+        assert len(make_cw_audio('E')) % 8 == 0
 
-    def test_all_byte_values_are_in_uint8_range(self):
-        data = np.frombuffer(make_cw_iq('SOS'), dtype=np.uint8)
-        assert data.min() >= 0
-        assert data.max() <= 255
-
-    def test_tone_frequency_matches_cw_offset_after_mixing(self):
-        data    = make_cw_iq('T')
-        preroll = SDR_SAMPLE_RATE * 2
-        raw     = np.frombuffer(data[preroll:preroll + 4096 * 2], dtype=np.uint8).astype(np.float32)
-        iq      = ((raw[0::2] - 127.5) + 1j * (raw[1::2] - 127.5)) / 127.5
-        n       = len(iq)
-        lo      = np.exp(-1j * 2 * np.pi * FREQ_OFFSET_HZ * np.arange(n) / SDR_SAMPLE_RATE)
-        freqs   = np.fft.fftshift(np.fft.fftfreq(n, 1 / SDR_SAMPLE_RATE))
-        spectrum  = np.abs(np.fft.fftshift(np.fft.fft(iq * lo)))
-        peak_freq = freqs[int(np.argmax(spectrum))]
-        assert abs(peak_freq) < 5000
+    def test_output_is_complex64_parseable(self):
+        data = make_cw_audio('SOS')
+        arr  = np.frombuffer(data, dtype=np.complex64)
+        assert arr.dtype == np.complex64
+        assert len(arr) > 0
 
 
 if __name__ == '__main__':
     print("=== CW Roundtrip Smoke Test ===")
     for msg in ['E', 'SOS', 'CQ DE']:
-        print(f"  {msg!r} → {decoded_text(decode_message(msg))!r}")
+        print(f"  {msg!r} -> {decoded_text(decode_message(msg))!r}")

@@ -2,12 +2,11 @@
 Tests for the SSTV decoder service.
 
 Organised by signal-chain stage:
-  TestConstants         — configuration values
-  TestKaiserLowpass     — FIR filter builder
-  TestLOOscillator      — local oscillator
-  TestSSTVSignalChain   — IQ → FM audio
-  TestVISDetector       — VIS preamble state machine
-  TestImageDecoder      — pixel decode helpers
+  TestConstants         -- configuration values
+  TestKaiserLowpass     -- FIR filter builder (used in tests for VIS frequencies)
+  TestFMDiscriminator   -- FM discriminator on complex64 input
+  TestVISDetector       -- VIS preamble state machine
+  TestImageDecoder      -- pixel decode helpers
 """
 
 import math
@@ -35,18 +34,13 @@ import sstv_decoder as sstv  # noqa: E402
 
 # ── Pure test helpers ──────────────────────────────────────────────────────────
 
-def make_iq_tone(freq_hz: float, duration_s: float, sample_rate: int, amplitude: float = 0.7) -> bytes:
-    """Generate IQ bytes of a pure tone at freq_hz relative to DC."""
+def make_complex64_tone(freq_hz: float, duration_s: float, sample_rate: int,
+                        amplitude: float = 0.7) -> np.ndarray:
+    """Generate complex64 array of a pure tone at freq_hz (already mixed to DC base)."""
     n = int(duration_s * sample_rate)
     t = np.arange(n) / sample_rate
     phase = 2 * math.pi * freq_hz * t
-    iq = amplitude * (np.cos(phase) + 1j * np.sin(phase))
-    i_u8 = np.clip(iq.real * 127.5 + 127.5, 0, 255).astype(np.uint8)
-    q_u8 = np.clip(iq.imag * 127.5 + 127.5, 0, 255).astype(np.uint8)
-    interleaved = np.empty(n * 2, dtype=np.uint8)
-    interleaved[0::2] = i_u8
-    interleaved[1::2] = q_u8
-    return interleaved.tobytes()
+    return (amplitude * (np.cos(phase) + 1j * np.sin(phase))).astype(np.complex64)
 
 
 def make_fm_tone(audio_freq_hz: float, duration_s: float, sample_rate: int = sstv.AUDIO_RATE) -> np.ndarray:
@@ -59,11 +53,11 @@ def _vis_preamble(sample_rate: int = sstv.AUDIO_RATE) -> np.ndarray:
     """Build a minimal valid VIS preamble for Robot 36 (VIS code 8).
 
     Sequence (each 'window' = 10 ms = WIN_MS):
-      leader  : 30 windows of 1900 Hz  (≥ LEADER_WINS required)
-      break   : 1 window  of 1200 Hz   (transitions LEADER → BREAK)
-      start   : 3 windows of 1900 Hz   (transitions BREAK → START → VIS_BITS)
+      leader  : 30 windows of 1900 Hz  (>= LEADER_WINS required)
+      break   : 1 window  of 1200 Hz   (transitions LEADER -> BREAK)
+      start   : 3 windows of 1900 Hz   (transitions BREAK -> START -> VIS_BITS)
       8 bits  : 3 windows each, 1100 Hz = '1', 1300 Hz = '0' (LSB first)
-      stop    : 3 windows of 1200 Hz   (transitions STOP → BUFFERING)
+      stop    : 3 windows of 1200 Hz   (transitions STOP -> BUFFERING)
     """
     win = round(10 * sample_rate / 1000)
 
@@ -77,8 +71,8 @@ def _vis_preamble(sample_rate: int = sstv.AUDIO_RATE) -> np.ndarray:
 
     segments = [
         tone_windows(1900, 30),   # leader
-        tone_windows(1200, 1),    # break (single window — next window must be 1900)
-        tone_windows(1900, 3),    # start (3 windows bring sub_cnt to 3 → VIS_BITS)
+        tone_windows(1200, 1),    # break (single window -- next window must be 1900)
+        tone_windows(1900, 3),    # start (3 windows bring sub_cnt to 3 -> VIS_BITS)
     ]
     for bit in bits:
         freq = 1100.0 if bit == 1 else 1300.0
@@ -91,14 +85,8 @@ def _vis_preamble(sample_rate: int = sstv.AUDIO_RATE) -> np.ndarray:
 # ── Constants ──────────────────────────────────────────────────────────────────
 
 class TestConstants:
-    def test_sstv_frequency_is_above_rf_centre(self):
-        assert sstv.SSTV_OFFSET_HZ > 0
-
-    def test_audio_rate_is_product_of_two_decimation_stages(self):
-        assert sstv.SDR_SAMPLE_RATE // sstv.DECIMATE1 // sstv.DECIMATE2 == sstv.AUDIO_RATE
-
-    def test_intermediate_rate_matches_first_decimation(self):
-        assert sstv.SDR_SAMPLE_RATE // sstv.DECIMATE1 == sstv.INTERMEDIATE
+    def test_audio_rate_is_24khz(self):
+        assert sstv.AUDIO_RATE == 24_000
 
     def test_freq_black_is_below_freq_white(self):
         assert sstv.FREQ_BLACK < sstv.FREQ_WHITE
@@ -107,7 +95,7 @@ class TestConstants:
         assert sstv.FREQ_SYNC < sstv.FREQ_BLACK
 
 
-# ── FIR filter ─────────────────────────────────────────────────────────────────
+# ── FIR filter (kaiser_lowpass kept for potential VIS tone helper use) ─────────
 
 class TestKaiserLowpass:
     def test_unity_gain_at_dc(self):
@@ -123,92 +111,46 @@ class TestKaiserLowpass:
         assert taps.dtype == np.float32
 
     def test_does_not_mutate_input(self):
-        # kaiser_lowpass should not modify any external array
         taps = sstv.kaiser_lowpass(1000.0, 24_000.0)
         copy = taps.copy()
-        _ = sstv.kaiser_lowpass(2000.0, 24_000.0)  # second call must not affect first
+        _ = sstv.kaiser_lowpass(2000.0, 24_000.0)
         np.testing.assert_array_equal(taps, copy)
 
 
-# ── LO Oscillator ──────────────────────────────────────────────────────────────
+# ── FM discriminator ───────────────────────────────────────────────────────────
 
-class TestLOOscillator:
-    def test_output_length_matches_request(self):
-        lo = sstv.LOOscillator(1000.0, sstv.SDR_SAMPLE_RATE)
-        out = lo.generate(512)
-        assert len(out) == 512
+class TestFMDiscriminator:
+    def test_returns_float32(self):
+        fm  = sstv.FMDiscriminator()
+        inp = make_complex64_tone(1000.0, 0.01, sstv.AUDIO_RATE)
+        out = fm.process(inp)
+        assert out.dtype == np.float32
 
-    def test_output_is_complex64(self):
-        lo = sstv.LOOscillator(1000.0, sstv.SDR_SAMPLE_RATE)
-        out = lo.generate(128)
-        assert out.dtype == np.complex64
+    def test_output_length_matches_input(self):
+        fm  = sstv.FMDiscriminator()
+        inp = make_complex64_tone(500.0, 0.05, sstv.AUDIO_RATE)
+        out = fm.process(inp)
+        assert len(out) == len(inp)
 
-    def test_amplitude_stays_near_unity(self):
-        lo = sstv.LOOscillator(55_000.0, sstv.SDR_SAMPLE_RATE)
-        out = lo.generate(10_000)
-        mags = np.abs(out)
-        assert float(mags.min()) > 0.95
-        assert float(mags.max()) < 1.05
+    def test_dc_carrier_produces_near_zero_frequency(self):
+        fm  = sstv.FMDiscriminator()
+        # A pure DC complex carrier (constant phase) should yield ~0 Hz
+        n   = int(0.1 * sstv.AUDIO_RATE)
+        inp = np.ones(n, dtype=np.complex64)
+        out = fm.process(inp)
+        # Skip first sample (prev state was 0)
+        assert float(np.abs(out[1:]).mean()) < 100.0
 
-    def test_phase_is_continuous_across_calls(self):
-        lo = sstv.LOOscillator(1000.0, sstv.SDR_SAMPLE_RATE)
-        a = lo.generate(100)
-        b = lo.generate(100)
-        # Phase difference between last of a and first of b should match step size
-        step = 2 * math.pi * 1000.0 / sstv.SDR_SAMPLE_RATE
-        expected_phase_diff = step
-        actual_phase_diff = float(np.angle(b[0]) - np.angle(a[-1]))
-        # Wrap into [-π, π]
-        actual_phase_diff = (actual_phase_diff + math.pi) % (2 * math.pi) - math.pi
-        expected_phase_diff = (expected_phase_diff + math.pi) % (2 * math.pi) - math.pi
-        assert abs(actual_phase_diff - expected_phase_diff) < 0.01
-
-
-# ── SSTV Signal Chain ──────────────────────────────────────────────────────────
-
-class TestSSTVSignalChain:
-    def test_returns_float32_audio(self):
-        chain = sstv.SSTVSignalChain()
-        raw = make_iq_tone(sstv.SSTV_OFFSET_HZ, 0.01, sstv.SDR_SAMPLE_RATE)
-        audio = chain.process(raw)
-        assert audio.dtype == np.float32
-
-    def test_output_length_is_decimated(self):
-        chain = sstv.SSTVSignalChain()
-        n_iq_pairs = 24_000   # 10 ms at 2.4 Msps
-        raw = make_iq_tone(sstv.SSTV_OFFSET_HZ, 0.01, sstv.SDR_SAMPLE_RATE)
-        audio = chain.process(raw)
-        expected_samples = n_iq_pairs // (sstv.DECIMATE1 * sstv.DECIMATE2)
-        # Allow ±5 for filter transient
-        assert abs(len(audio) - expected_samples) <= 5
-
-    def test_tone_at_sstv_offset_produces_near_dc_audio(self):
-        chain = sstv.SSTVSignalChain()
-        # A pure tone at exactly the SSTV_OFFSET_HZ should mix to DC
-        raw = make_iq_tone(sstv.SSTV_OFFSET_HZ, 0.1, sstv.SDR_SAMPLE_RATE)
-        audio = chain.process(raw)
-        # After FM discriminator, a DC carrier should produce ~0 Hz audio
-        # (instantaneous frequency of a constant carrier is 0)
-        # Skip first 10% for filter settle
-        settled = audio[len(audio) // 10:]
-        assert float(np.abs(settled).mean()) < 1500.0
-
-    def test_odd_byte_count_input_is_handled(self):
-        chain = sstv.SSTVSignalChain()
-        raw = make_iq_tone(sstv.SSTV_OFFSET_HZ, 0.01, sstv.SDR_SAMPLE_RATE)
-        chain.process(raw[:-1])   # should not raise
-
-    def test_state_persists_across_chunks(self):
-        chain_single = sstv.SSTVSignalChain()
-        chain_chunked = sstv.SSTVSignalChain()
-        raw = make_iq_tone(sstv.SSTV_OFFSET_HZ, 0.05, sstv.SDR_SAMPLE_RATE)
-        audio_single = chain_single.process(raw)
-        mid = len(raw) // 2
-        audio_a = chain_chunked.process(raw[:mid])
-        audio_b = chain_chunked.process(raw[mid:])
-        audio_chunked = np.concatenate([audio_a, audio_b])
-        # Lengths should match (filter state continuity)
-        assert len(audio_chunked) == len(audio_single)
+    def test_state_persists_across_calls(self):
+        fm1 = sstv.FMDiscriminator()
+        fm2 = sstv.FMDiscriminator()
+        inp = make_complex64_tone(500.0, 0.05, sstv.AUDIO_RATE)
+        out1 = fm1.process(inp)
+        mid  = len(inp) // 2
+        out2a = fm2.process(inp[:mid])
+        out2b = fm2.process(inp[mid:])
+        out2  = np.concatenate([out2a, out2b])
+        assert len(out1) == len(out2)
 
 
 # ── FM discriminator output frequency mapping ─────────────────────────────────
@@ -276,7 +218,6 @@ class TestVISDetector:
 
     def test_leader_alone_does_not_trigger_frame(self):
         det = sstv.VISDetector()
-        # Only leader, no break
         leader = make_fm_tone(1900, 0.5)
         result = det.push(leader)
         assert result is None
@@ -284,7 +225,6 @@ class TestVISDetector:
     def test_valid_vis_preamble_triggers_frame_buffering(self):
         det = sstv.VISDetector()
         preamble = _vis_preamble()
-        # Feed preamble + enough silence to fill a Robot 36 frame
         robot36_duration_s = 40.0
         filler = make_fm_tone(1700, robot36_duration_s)
         result = det.push(np.concatenate([preamble, filler]))
@@ -305,7 +245,6 @@ class TestVISDetector:
         preamble = _vis_preamble()
         filler = make_fm_tone(1700, 40.0)
         det.push(np.concatenate([preamble, filler]))
-        # After a successful decode, state should reset
         assert det._state == 'IDLE'
 
     def test_result_contains_audio_array_and_vis_code(self):
@@ -343,7 +282,6 @@ class TestImageDecoder:
         assert img.height == 200
 
     def test_decode_robot36_returns_rgb_image(self):
-        # Construct minimal Robot 36 audio: sync + luma data for each row
         sr = sstv.AUDIO_RATE
         lines = 240
         sync_s, porch_s, luma_s, chroma_s = 0.009, 0.003, 0.088, 0.044

@@ -3,6 +3,9 @@ Tests for the RTL-bridge multiplexer.
 
 Tests the Multiplexer class's thread-safe client management and
 broadcast logic without requiring actual network connections.
+
+Also tests AudioDecimator: correct output dtype, length, and state
+continuity across chunk boundaries.
 """
 
 import contextlib
@@ -10,6 +13,8 @@ import os
 import socket
 import sys
 import threading
+
+import numpy as np
 
 sys.path.insert(0, os.path.dirname(__file__))
 import rtl_bridge as bridge
@@ -182,3 +187,60 @@ class TestMagicHeader:
 
         test_r.close()
         t.join(timeout=2)
+
+
+# ── AudioDecimator ─────────────────────────────────────────────────────────────
+
+class TestAudioDecimator:
+    def _make_raw(self, n_bytes: int = 65536) -> bytes:
+        rng = np.random.default_rng(7)
+        return rng.integers(0, 256, n_bytes, dtype=np.uint8).tobytes()
+
+    def test_output_is_complex64(self):
+        ad  = bridge.AudioDecimator(-146_000)
+        raw = self._make_raw()
+        out = ad.process(raw)
+        assert out.dtype == np.complex64
+
+    def test_output_length_is_100x_less_than_input_iq_pairs(self):
+        ad  = bridge.AudioDecimator(55_000)
+        raw = self._make_raw(65536)
+        out = ad.process(raw)
+        # 65536 bytes = 32768 IQ pairs -> ~327-328 output samples (100x decimation)
+        assert 310 <= len(out) <= 340
+
+    def test_state_persists_across_chunks(self):
+        ad1 = bridge.AudioDecimator(-146_000)
+        ad2 = bridge.AudioDecimator(-146_000)
+        raw = self._make_raw(131072)
+        out1 = ad1.process(raw)
+        out2a = ad2.process(raw[:65536])
+        out2b = ad2.process(raw[65536:])
+        out2  = np.concatenate([out2a, out2b])
+        assert abs(len(out1) - len(out2)) <= 1
+
+    def test_different_freq_offsets_produce_different_output(self):
+        raw = self._make_raw()
+        out_cw   = bridge.AudioDecimator(-146_000).process(raw)
+        out_sstv = bridge.AudioDecimator(55_000).process(raw)
+        # Outputs should differ (different LO mix)
+        assert not np.allclose(out_cw, out_sstv, atol=1e-3)
+
+    def test_odd_byte_input_handled_safely(self):
+        ad  = bridge.AudioDecimator(58_000)
+        raw = self._make_raw(65537)   # odd byte count
+        out = ad.process(raw)
+        assert out.dtype == np.complex64
+
+
+# ── AudioMux magic header ──────────────────────────────────────────────────────
+
+class TestAudioMagic:
+    def test_audio_magic_is_12_bytes(self):
+        assert len(bridge.AUDIO_MAGIC) == 12
+
+    def test_audio_magic_starts_with_AUD(self):
+        assert bridge.AUDIO_MAGIC.startswith(b"AUD")
+
+    def test_audio_magic_differs_from_rtl_magic(self):
+        assert bridge.AUDIO_MAGIC != bridge.MAGIC

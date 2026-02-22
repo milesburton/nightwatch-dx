@@ -1,12 +1,13 @@
 """
 SSTV decoder service.
 
-Connects to the rtl-bridge TCP multiplexer (port 1235) and decodes SSTV on
-14.230 MHz.
+Connects to the rtl-bridge AudioMux (port 1238) and decodes SSTV on
+14.230 MHz.  rtl-bridge pre-decimates the IQ stream to complex64@24kHz
+with the SSTV carrier already mixed to DC, so this service only needs
+to apply an FM discriminator and then run the VIS detector and image decoder.
 
-Signal chain:
-  uint8 IQ → complex64 → mix by +55kHz → 10× FIR → 10× FIR
-           → FM discriminator → VIS detector → image decoder → PNG
+Signal chain (in this service):
+  complex64@24kHz -> FM discriminator -> VIS detector -> image decoder -> PNG
 
 Broadcasts JSON messages over WebSocket (aiohttp) on WS_PORT (default 8766).
 
@@ -30,28 +31,19 @@ import numpy as np
 from aiohttp import web
 from PIL import Image
 
-# ── Configuration ──────────────────────────────────────────────────────────────
+# -- Configuration -------------------------------------------------------------
 
 MUX_HOST = os.environ.get("MUX_HOST", "rtl-bridge")
-MUX_PORT = int(os.environ.get("MUX_PORT", "1235"))
+MUX_PORT = int(os.environ.get("MUX_PORT", "1238"))
 WS_PORT  = int(os.environ.get("WS_PORT",  "8766"))
 
-SDR_SAMPLE_RATE = 2_400_000
-SDR_CENTER_HZ   = 139_175_000
-LO_OFFSET_HZ    = 125_000_000
-RF_CENTER_HZ    = SDR_CENTER_HZ - LO_OFFSET_HZ   # 14_175_000
-SSTV_FREQ_HZ    = 14_230_000
-SSTV_OFFSET_HZ  = SSTV_FREQ_HZ - RF_CENTER_HZ    # +55_000
-
-DECIMATE1       = 10
-DECIMATE2       = 10
-INTERMEDIATE    = SDR_SAMPLE_RATE // DECIMATE1    # 240_000 Hz
-AUDIO_RATE      = INTERMEDIATE // DECIMATE2        # 24_000 Hz
+AUDIO_RATE   = 24_000
+SSTV_FREQ_HZ = 14_230_000
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [sstv] %(message)s")
 log = logging.getLogger(__name__)
 
-# ── FIR filter builder ─────────────────────────────────────────────────────────
+# -- FIR filter builder (still used by VIS detector helpers in tests) ----------
 
 def kaiser_lowpass(cutoff: float, sample_rate: float, duration: float = 0.001, beta: float = 8.0) -> np.ndarray:
     num_taps = int(duration * sample_rate) | 1
@@ -63,79 +55,33 @@ def kaiser_lowpass(cutoff: float, sample_rate: float, duration: float = 0.001, b
     taps = sinc * np.kaiser(num_taps, beta)
     return (taps / taps.sum()).astype(np.float32)
 
-_taps1 = kaiser_lowpass(INTERMEDIATE / 2, SDR_SAMPLE_RATE)
-_taps2 = kaiser_lowpass(AUDIO_RATE   / 2, INTERMEDIATE)
+# -- FM discriminator state ----------------------------------------------------
 
-# ── LO oscillator ─────────────────────────────────────────────────────────────
+class FMDiscriminator:
+    """Stateful FM discriminator for complex64 input."""
 
-class LOOscillator:
-    """Phase-continuous complex LO for frequency downconversion.
-
-    Generates exp(j·2π·f·t) vectorised over each call, maintaining
-    phase across successive calls so the waveform is continuous.
-    Phase is renormalised every call to prevent floating-point drift.
-    """
-
-    def __init__(self, freq_hz: float, sample_rate: float) -> None:
-        self._step  = 2 * np.pi * freq_hz / sample_rate
-        self._phase = 0.0
-
-    def generate(self, n: int) -> np.ndarray:
-        phases      = self._phase + self._step * np.arange(n)
-        self._phase = float(phases[-1] + self._step) % (2 * np.pi)
-        return np.exp(-1j * phases).astype(np.complex64)
-
-# ── SSTV signal chain ──────────────────────────────────────────────────────────
-
-class SSTVSignalChain:
     def __init__(self) -> None:
-        self._lo     = LOOscillator(SSTV_OFFSET_HZ, SDR_SAMPLE_RATE)
-        self._zi1_re = np.zeros(len(_taps1) - 1)
-        self._zi1_im = np.zeros(len(_taps1) - 1)
-        self._zi2_re = np.zeros(len(_taps2) - 1)
-        self._zi2_im = np.zeros(len(_taps2) - 1)
         self._prev_re = 0.0
         self._prev_im = 0.0
 
-    def process(self, raw: bytes) -> np.ndarray:
-        """Returns FM-discriminated audio samples (instantaneous frequency in Hz)."""
-        samples = np.frombuffer(raw, dtype=np.uint8).astype(np.float32)
-        if len(samples) & 1:
-            samples = samples[:-1]
-        iq = ((samples[0::2] - 127.5) + 1j * (samples[1::2] - 127.5)) / 127.5
-        iq = iq.astype(np.complex64)
-
-        lo    = self._lo.generate(len(iq))
-        mixed = iq * lo
-
-        from scipy.signal import lfilter
-        re1, self._zi1_re = lfilter(_taps1, 1.0, mixed.real, zi=self._zi1_re)
-        im1, self._zi1_im = lfilter(_taps1, 1.0, mixed.imag, zi=self._zi1_im)
-        stage1 = (re1 + 1j * im1)[DECIMATE1 - 1::DECIMATE1]
-
-        re2, self._zi2_re = lfilter(_taps2, 1.0, stage1.real, zi=self._zi2_re)
-        im2, self._zi2_im = lfilter(_taps2, 1.0, stage1.imag, zi=self._zi2_im)
-        audio = (re2 + 1j * im2)[DECIMATE2 - 1::DECIMATE2]
-
-        # FM discriminator: inst_freq = atan2(Q[i]·I[i-1] - I[i]·Q[i-1],
-        #                                      I[i]·I[i-1] + Q[i]·Q[i-1]) × sr / 2π
-        i_arr = audio.real
-        q_arr = audio.imag
-        prev_i = np.empty(len(audio))
-        prev_q = np.empty(len(audio))
+    def process(self, audio_c: np.ndarray) -> np.ndarray:
+        """audio_c: complex64 array at AUDIO_RATE. Returns float32 instantaneous frequency in Hz."""
+        i_arr = audio_c.real
+        q_arr = audio_c.imag
+        prev_i = np.empty(len(audio_c))
+        prev_q = np.empty(len(audio_c))
         prev_i[0] = self._prev_re
         prev_q[0] = self._prev_im
         prev_i[1:] = i_arr[:-1]
         prev_q[1:] = q_arr[:-1]
-        self._prev_re = float(i_arr[-1]) if len(i_arr) else self._prev_re
-        self._prev_im = float(q_arr[-1]) if len(q_arr) else self._prev_im
-
+        if len(i_arr):
+            self._prev_re = float(i_arr[-1])
+            self._prev_im = float(q_arr[-1])
         cross = q_arr * prev_i - i_arr * prev_q
         dot   = i_arr * prev_i + q_arr * prev_q
-        inst  = np.arctan2(cross, dot) * AUDIO_RATE / (2 * np.pi)
-        return inst.astype(np.float32)
+        return (np.arctan2(cross, dot) * AUDIO_RATE / (2 * np.pi)).astype(np.float32)
 
-# ── VIS detector ───────────────────────────────────────────────────────────────
+# -- VIS detector --------------------------------------------------------------
 # Mirrors SSTVVISDetector.ts exactly.
 
 VIS_DURATIONS: dict[int, float] = {
@@ -287,7 +233,7 @@ class VISDetector:
             code |= (self._vis_bits[i] << i)
         return code
 
-# ── SSTV image decoder ─────────────────────────────────────────────────────────
+# -- SSTV image decoder --------------------------------------------------------
 
 FREQ_SYNC  = 1200.0
 FREQ_BLACK = 1500.0
@@ -299,7 +245,7 @@ def freq_to_pixel(freq: float) -> int:
 
 
 def decode_robot36(audio: np.ndarray, sr: int) -> Image.Image:
-    """Minimal Robot 36 decoder → RGB PIL image."""
+    """Minimal Robot 36 decoder -> RGB PIL image."""
     lines   = 240
     width   = 320
     sync_ms = 9.0
@@ -313,8 +259,6 @@ def decode_robot36(audio: np.ndarray, sr: int) -> Image.Image:
     chroma_s = chroma_ms / 1000
     pixels = np.zeros((lines, width, 3), dtype=np.uint8)
 
-    # Find VIS end (1200 Hz start bit already consumed by VISDetector;
-    # audio starts from leader. Scan for first sync pulse.)
     def find_sync(start_idx: int) -> int:
         window = int(sync_s * sr * 0.8)
         for i in range(start_idx, min(len(audio) - window, start_idx + int(sr * 2))):
@@ -358,7 +302,6 @@ def decode_robot36(audio: np.ndarray, sr: int) -> Image.Image:
         C = np.repeat(C, 2)
         pos = chroma_end
 
-        # Simple YUV→RGB (even rows = U, odd = V, Robot 36)
         if row % 2 == 0:
             U = C
             V = np.zeros_like(C)
@@ -406,7 +349,7 @@ def image_to_data_url(img: Image.Image) -> str:
     b64 = base64.b64encode(buf.getvalue()).decode()
     return f"data:image/png;base64,{b64}"
 
-# ── WebSocket broadcast hub ────────────────────────────────────────────────────
+# -- WebSocket broadcast hub ---------------------------------------------------
 
 class Hub:
     def __init__(self) -> None:
@@ -437,20 +380,20 @@ class Hub:
     async def send_status(self, ws: web.WebSocketResponse) -> None:
         await ws.send_str(json.dumps({'type': 'status', 'connected': self._connected}))
 
-# ── IQ reader loop ─────────────────────────────────────────────────────────────
+# -- IQ reader loop ------------------------------------------------------------
 
 async def iq_reader(hub: Hub) -> None:
-    chain   = SSTVSignalChain()
+    fm   = FMDiscriminator()
     detector = VISDetector(AUDIO_RATE)
 
     while True:
         try:
-            log.info("Connecting to TCP mux at %s:%d…", MUX_HOST, MUX_PORT)
+            log.info("Connecting to audio mux at %s:%d...", MUX_HOST, MUX_PORT)
             reader, writer = await asyncio.open_connection(MUX_HOST, MUX_PORT)
             header = await reader.readexactly(12)
-            if not header.startswith(b"RTL"):
+            if not header.startswith(b"AUD"):
                 raise ValueError(f"Unexpected header: {header!r}")
-            log.info("Connected. Listening for SSTV on %.3f MHz…", SSTV_FREQ_HZ / 1e6)
+            log.info("Connected. Listening for SSTV on %.3f MHz...", SSTV_FREQ_HZ / 1e6)
             await hub.set_connected(True)
 
             queue: asyncio.Queue[bytes | None] = asyncio.Queue(maxsize=4)
@@ -474,8 +417,9 @@ async def iq_reader(hub: Hub) -> None:
             loop = asyncio.get_event_loop()
 
             def _process_chunk(c: bytes) -> tuple[np.ndarray, object]:
-                a = chain.process(c)
-                return a, detector.push(a)
+                audio_c = np.frombuffer(c, dtype=np.complex64)
+                audio   = fm.process(audio_c)
+                return audio, detector.push(audio)
 
             while True:
                 chunk = await queue.get()
@@ -501,7 +445,7 @@ async def iq_reader(hub: Hub) -> None:
             drain_task.cancel()
 
         except Exception as e:
-            log.warning("Mux connection lost: %s, retrying in 5s…", e)
+            log.warning("Mux connection lost: %s, retrying in 5s...", e)
         finally:
             try:
                 writer.close()
@@ -511,7 +455,7 @@ async def iq_reader(hub: Hub) -> None:
             await hub.set_connected(False)
         await asyncio.sleep(5)
 
-# ── HTTP / WebSocket server ────────────────────────────────────────────────────
+# -- HTTP / WebSocket server ---------------------------------------------------
 
 async def ws_handler(request: web.Request) -> web.WebSocketResponse:
     hub: Hub = request.app['hub']
