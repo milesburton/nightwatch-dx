@@ -1,6 +1,6 @@
-# ionosphere-hf
+# dx-watch
 
-[![CI](https://github.com/milesburton/ionosphere-hf/actions/workflows/ci.yml/badge.svg)](https://github.com/milesburton/ionosphere-hf/actions/workflows/ci.yml)
+[![CI](https://github.com/milesburton/dx-watch/actions/workflows/ci.yml/badge.svg)](https://github.com/milesburton/dx-watch/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/Docker-Compose-blue.svg)](docker-compose.yml)
 [![Python](https://img.shields.io/badge/Python-3.11-blue.svg)](services/cw-decoder)
@@ -62,8 +62,8 @@ The decoder is tuned to 14.175 MHz centre (20m band) with 2.4 MHz of bandwidth, 
 ### Run
 
 ```bash
-git clone https://github.com/milesburton/ionosphere-hf.git
-cd ionosphere-hf
+git clone https://github.com/milesburton/dx-watch.git
+cd dx-watch
 docker compose up -d --build
 ```
 

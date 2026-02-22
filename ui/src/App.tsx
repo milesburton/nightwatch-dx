@@ -195,17 +195,17 @@ function Subtitle({
 function useDocumentTitle(hwDown: boolean, iqConnected: boolean, cwActive: boolean, sstActive: boolean) {
   useEffect(() => {
     if (hwDown) {
-      document.title = '⚠ Offline — ionosphere-hf';
+      document.title = '⚠ Offline — dx-watch';
     } else if (!iqConnected) {
-      document.title = 'Connecting… — ionosphere-hf';
+      document.title = 'Connecting… — dx-watch';
     } else if (cwActive && sstActive) {
-      document.title = '● CW + SSTV — ionosphere-hf';
+      document.title = '● CW + SSTV — dx-watch';
     } else if (cwActive) {
-      document.title = '● CW Active — ionosphere-hf';
+      document.title = '● CW Active — dx-watch';
     } else if (sstActive) {
-      document.title = '● SSTV Active — ionosphere-hf';
+      document.title = '● SSTV Active — dx-watch';
     } else {
-      document.title = 'Scanning 20m — ionosphere-hf';
+      document.title = 'Scanning 20m — dx-watch';
     }
   }, [hwDown, iqConnected, cwActive, sstActive]);
 }
@@ -242,7 +242,7 @@ export default function App() {
       <div className="w-full max-w-7xl mx-auto px-6 py-10">
         <header className="text-center mb-10">
           <h1 className="text-5xl font-bold mb-3 tracking-tight text-white drop-shadow-lg">
-            ionosphere-hf
+            dx-watch
           </h1>
           <Subtitle
             iqConnected={iqConnected}
@@ -264,12 +264,12 @@ export default function App() {
           </div>
           <div>
             <a
-              href="https://github.com/milesburton/ionosphere-hf"
+              href="https://github.com/milesburton/dx-watch"
               target="_blank"
               rel="noopener noreferrer"
               className="text-white/40 hover:text-white/70 transition-colors"
             >
-              milesburton/ionosphere-hf
+              milesburton/dx-watch
             </a>
           </div>
         </footer>
