@@ -7,6 +7,8 @@ import time
 from collections import deque
 from datetime import UTC, datetime
 
+import psutil
+
 import numpy as np
 from aiohttp import web
 
@@ -443,6 +445,63 @@ async def log_ws_handler(request: web.Request) -> web.WebSocketResponse:
     return ws
 
 
+_status_clients: set[web.WebSocketResponse] = set()
+
+
+def _host_stats() -> dict:
+    cpu   = psutil.cpu_percent(interval=None)
+    load  = psutil.getloadavg()
+    mem   = psutil.virtual_memory()
+    disk  = psutil.disk_usage('/')
+    return {
+        'type':        'status',
+        'cpu_pct':     round(cpu, 1),
+        'load_1':      round(load[0], 2),
+        'load_5':      round(load[1], 2),
+        'load_15':     round(load[2], 2),
+        'mem_used_mb': round(mem.used / 1024 / 1024),
+        'mem_total_mb': round(mem.total / 1024 / 1024),
+        'mem_pct':     round(mem.percent, 1),
+        'disk_used_gb': round(disk.used / 1024 ** 3, 1),
+        'disk_total_gb': round(disk.total / 1024 ** 3, 1),
+        'disk_pct':    round(disk.percent, 1),
+        'ts':          datetime.now(UTC).isoformat(),
+    }
+
+
+async def status_ws_handler(request: web.Request) -> web.WebSocketResponse:
+    ws = web.WebSocketResponse()
+    await ws.prepare(request)
+    _status_clients.add(ws)
+    # Send immediately on connect
+    with contextlib.suppress(Exception):
+        await ws.send_str(json.dumps(_host_stats()))
+    try:
+        await ws.wait_for_close()
+    finally:
+        _status_clients.discard(ws)
+    return ws
+
+
+async def _status_broadcaster() -> None:
+    """Push host stats to all /ws/status clients every 5 seconds."""
+    # Warm up psutil cpu_percent (first call always returns 0.0)
+    psutil.cpu_percent(interval=None)
+    await asyncio.sleep(1)
+    while True:
+        if _status_clients:
+            payload = json.dumps(_host_stats())
+            dead = []
+            for ws in list(_status_clients):
+                try:
+                    await ws.send_str(payload)
+                except Exception:
+                    dead.append(ws)
+            for ws in dead:
+                _status_clients.discard(ws)
+        await asyncio.sleep(5)
+
+
 async def supervised_iq_reader(hub: Hub) -> None:
     while True:
         try:
@@ -460,8 +519,10 @@ async def main() -> None:
     app['hub'] = hub
     app.router.add_get('/ws/cw', ws_handler)
     app.router.add_get('/ws/logs', log_ws_handler)
+    app.router.add_get('/ws/status', status_ws_handler)
 
     asyncio.create_task(supervised_iq_reader(hub))
+    asyncio.create_task(_status_broadcaster())
 
     runner = web.AppRunner(app)
     await runner.setup()

@@ -154,7 +154,7 @@ jobs:
         cache-to: type=gha,mode=max,scope=ui
 
   deploy:
-    name: Deploy to home lab
+    name: Deploy
     runs-on: self-hosted
     needs: publish
     if: github.ref == 'refs/heads/main'

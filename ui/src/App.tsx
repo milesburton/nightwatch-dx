@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { CWLogPanel } from './components/CWLogPanel.js';
 import { EasyPalGalleryPanel } from './components/EasyPalGalleryPanel.js';
+import { ServerStatusPanel } from './components/ServerStatusPanel.js';
 import { SSTVGalleryPanel } from './components/SSTVGalleryPanel.js';
 import { WaterfallPanel } from './components/WaterfallPanel.js';
 import type { CWSocketMessage } from './types.js';
@@ -292,6 +293,7 @@ export default function App() {
           <CWLogPanel />
           <SSTVGalleryPanel />
           <EasyPalGalleryPanel />
+          <ServerStatusPanel />
         </main>
 
         <footer className="text-center text-white/40 py-6 text-sm mt-6 space-y-1">
