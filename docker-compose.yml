@@ -5,7 +5,7 @@ services:
     build:
       context: .
       dockerfile: docker/rtl-bridge/Dockerfile
-    container_name: sdr-rtl-bridge
+    container_name: dx-watch-rtl-bridge
     restart: unless-stopped
     devices:
       - /dev/bus/usb:/dev/bus/usb
@@ -24,7 +24,7 @@ services:
     build:
       context: .
       dockerfile: docker/cw-decoder/Dockerfile
-    container_name: sdr-cw-decoder
+    container_name: dx-watch-cw-decoder
     restart: unless-stopped
     depends_on:
       - rtl-bridge
@@ -38,7 +38,7 @@ services:
     build:
       context: .
       dockerfile: docker/sstv-decoder/Dockerfile
-    container_name: sdr-sstv-decoder
+    container_name: dx-watch-sstv-decoder
     restart: unless-stopped
     depends_on:
       - rtl-bridge
@@ -47,16 +47,31 @@ services:
       MUX_PORT: "1235"
       WS_PORT: "8766"
 
+  # ── EasyPal decoder ───────────────────────────────────────────────────────
+  easypal-decoder:
+    build:
+      context: .
+      dockerfile: docker/easypal-decoder/Dockerfile
+    container_name: dx-watch-easypal-decoder
+    restart: unless-stopped
+    depends_on:
+      - rtl-bridge
+    environment:
+      MUX_HOST: "rtl-bridge"
+      MUX_PORT: "1235"
+      WS_PORT: "8767"
+
   # ── Web UI ────────────────────────────────────────────────────────────────
   ui:
     build:
       context: .
       dockerfile: docker/ui/Dockerfile
-    container_name: sdr-ui
+    container_name: dx-watch-ui
     restart: unless-stopped
     depends_on:
       - rtl-bridge
       - cw-decoder
       - sstv-decoder
+      - easypal-decoder
     ports:
       - "8080:80"
