@@ -30,6 +30,10 @@ services:
     restart: unless-stopped
     depends_on:
       - rtl-bridge
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
     environment:
       MUX_HOST: "rtl-bridge"
       MUX_PORT: "1235"
@@ -45,6 +49,10 @@ services:
     restart: unless-stopped
     depends_on:
       - rtl-bridge
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
     environment:
       MUX_HOST: "rtl-bridge"
       MUX_PORT: "1235"
@@ -60,6 +68,10 @@ services:
     restart: unless-stopped
     depends_on:
       - rtl-bridge
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
     environment:
       MUX_HOST: "rtl-bridge"
       MUX_PORT: "1235"
