@@ -14,31 +14,36 @@
  */
 
 interface LogEntry {
-  level:   'log' | 'info' | 'warn' | 'error';
-  source:  string;
+  level: 'log' | 'info' | 'warn' | 'error';
+  source: string;
   message: string;
-  ts:      string;
+  ts: string;
 }
 
 const FLUSH_INTERVAL_MS = 1_000;
-const FLUSH_ON_ERROR    = true;
+const FLUSH_ON_ERROR = true;
 
 const _buffer: LogEntry[] = [];
-let _source  = 'browser';
-let _active  = false;
-const _conn  = { ws: null as WebSocket | null };
+let _source = 'browser';
+let _active = false;
+const _conn = { ws: null as WebSocket | null };
 
 function wsUrl(): string {
-  const proto = (typeof location !== 'undefined' && location.protocol === 'https:') ? 'wss' : 'ws';
-  const host  = typeof location !== 'undefined' ? location.host : 'localhost:8080';
+  const proto = typeof location !== 'undefined' && location.protocol === 'https:' ? 'wss' : 'ws';
+  const host = typeof location !== 'undefined' ? location.host : 'localhost:8080';
   return `${proto}://${host}/ws/cw`;
 }
 
 function openWs(): void {
   try {
     const ws = new WebSocket(wsUrl());
-    ws.onclose = () => { _conn.ws = null; setTimeout(openWs, 5_000); };
-    ws.onerror = () => { /* ignore */ };
+    ws.onclose = () => {
+      _conn.ws = null;
+      setTimeout(openWs, 5_000);
+    };
+    ws.onerror = () => {
+      /* ignore */
+    };
     _conn.ws = ws;
   } catch {
     _conn.ws = null;
@@ -61,8 +66,11 @@ function ship(level: LogEntry['level'], args: unknown[]): void {
   const message = args
     .map((a) => {
       if (typeof a === 'string') return a;
-      try { return JSON.stringify(a); }
-      catch { return String(a); }
+      try {
+        return JSON.stringify(a);
+      } catch {
+        return String(a);
+      }
     })
     .join(' ');
 
@@ -86,16 +94,28 @@ export function initLogShipper(source = 'browser'): void {
   openWs();
 
   const orig = {
-    log:   console.log.bind(console),
-    info:  console.info.bind(console),
-    warn:  console.warn.bind(console),
+    log: console.log.bind(console),
+    info: console.info.bind(console),
+    warn: console.warn.bind(console),
     error: console.error.bind(console),
   };
 
-  console.log   = (...a) => { orig.log(...a);   ship('log',   a); };
-  console.info  = (...a) => { orig.info(...a);  ship('info',  a); };
-  console.warn  = (...a) => { orig.warn(...a);  ship('warn',  a); };
-  console.error = (...a) => { orig.error(...a); ship('error', a); };
+  console.log = (...a) => {
+    orig.log(...a);
+    ship('log', a);
+  };
+  console.info = (...a) => {
+    orig.info(...a);
+    ship('info', a);
+  };
+  console.warn = (...a) => {
+    orig.warn(...a);
+    ship('warn', a);
+  };
+  console.error = (...a) => {
+    orig.error(...a);
+    ship('error', a);
+  };
 
   setInterval(flush, FLUSH_INTERVAL_MS);
 

@@ -1,7 +1,7 @@
 [tool.ruff]
 target-version = "py311"
 line-length = 100
-src = ["services", "tests"]
+src = ["services", "scripts"]
 
 [tool.ruff.lint]
 select = [
@@ -28,7 +28,7 @@ strict = false
 ignore_missing_imports = true
 warn_unused_ignores = true
 warn_return_any = false
-files = ["services", "tests"]
+files = ["services", "scripts"]
 
 [[tool.mypy.overrides]]
 module = ["services.cw-decoder.test_cw_roundtrip", "test_cw_roundtrip"]

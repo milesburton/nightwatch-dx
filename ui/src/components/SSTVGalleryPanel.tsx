@@ -17,7 +17,7 @@ type SSTVBackendMessage =
   | { type: 'error'; message: string };
 
 export function SSTVGalleryPanel() {
-  const [frames, setFrames]       = useState<SSTVFrame[]>([]);
+  const [frames, setFrames] = useState<SSTVFrame[]>([]);
   const [connected, setConnected] = useState(false);
 
   // Load persisted frames on mount (newest first)
@@ -45,17 +45,20 @@ export function SSTVGalleryPanel() {
       ws.onerror = () => ws?.close();
       ws.onmessage = (e: MessageEvent<string>) => {
         let msg: SSTVBackendMessage;
-        try { msg = JSON.parse(e.data) as SSTVBackendMessage; }
-        catch { return; }
+        try {
+          msg = JSON.parse(e.data) as SSTVBackendMessage;
+        } catch {
+          return;
+        }
 
         if (msg.type === 'status') {
           setConnected(msg.connected);
         } else if (msg.type === 'frame') {
           const frame: SSTVFrame = {
-            id:       frameCounter++,
-            ts:       msg.ts,
+            id: frameCounter++,
+            ts: msg.ts,
             imageUrl: msg.imageDataUrl,
-            mode:     msg.mode,
+            mode: msg.mode,
           };
           void saveSSTV(frame);
           setFrames((prev) => [frame, ...prev]);
@@ -88,9 +91,7 @@ export function SSTVGalleryPanel() {
       {/* Gallery */}
       {frames.length === 0 ? (
         <p className="text-white/20 text-xs italic text-center py-8">
-          {connected
-            ? 'Listening for SSTV on 14.230 MHz…'
-            : 'Connecting to SSTV decoder…'}
+          {connected ? 'Listening for SSTV on 14.230 MHz…' : 'Connecting to SSTV decoder…'}
         </p>
       ) : (
         <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">

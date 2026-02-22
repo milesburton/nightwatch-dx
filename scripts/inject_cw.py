@@ -5,8 +5,8 @@ Connects to the running cw-decoder WebSocket (/ws/cw) and listens for decoded
 characters while simultaneously connecting to the decoder's TCP port (acting as
 a fake rtl-bridge mux) to stream synthetic CW IQ data.
 
-Usage (from the project root on the N100, or via SSH):
-    python3 services/cw-decoder/inject_cw.py [--message "CQ CQ DE W1AW"]
+Usage (from the project root):
+    python3 scripts/inject_cw.py [--message "CQ CQ DE W1AW"]
 
 The script:
   1. Generates uint8 IQ bytes at 2.4 Msps with a CW tone at FREQ_OFFSET_HZ
@@ -43,7 +43,7 @@ from pathlib import Path
 import numpy as np
 
 # ── Add the service dir to sys.path so we can import cw_decoder ───────────────
-SERVICE_DIR = Path(__file__).parent
+SERVICE_DIR = Path(__file__).parent.parent / 'services' / 'cw-decoder'
 sys.path.insert(0, str(SERVICE_DIR))
 
 # ── Import the decoder under test ─────────────────────────────────────────────

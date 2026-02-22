@@ -22,7 +22,7 @@ function getIQWorker(): Worker {
 
 /** Subscribe to IQ worker messages. Returns an unsubscribe function. */
 export function addIQListener(fn: (msg: IQWorkerMessage) => void): () => void {
-  getIQWorker();   // ensure worker is started
+  getIQWorker(); // ensure worker is started
   _listeners.add(fn);
   return () => _listeners.delete(fn);
 }

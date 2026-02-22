@@ -17,7 +17,8 @@ ui/dist/
 build/
 
 # IDE
-.vscode/
+.vscode/*
+!.vscode/extensions.json
 .idea/
 *.swp
 *.swo

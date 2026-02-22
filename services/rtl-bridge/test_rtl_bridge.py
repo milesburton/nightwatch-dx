@@ -11,7 +11,7 @@ import socket
 import sys
 import threading
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'services', 'rtl-bridge'))
+sys.path.insert(0, os.path.dirname(__file__))
 import rtl_bridge as bridge
 
 # ── Multiplexer client management ─────────────────────────────────────────────

@@ -4,14 +4,14 @@
  * WebSocket chunk and that the waterfall colour-mapping is correct.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 // ── Inline the core constants + logic (iqWorker runs as a Worker so we
 //    can't import it directly; we duplicate just the bits under test) ─────────
 
-const FFT_SIZE     = 1024;
+const FFT_SIZE = 1024;
 const FFT_AVERAGES = 3;
-const FFT_STRIDE   = FFT_SIZE >> 2; // 256
+const FFT_STRIDE = FFT_SIZE >> 2; // 256
 
 const hannWindow = new Float32Array(FFT_SIZE);
 for (let i = 0; i < FFT_SIZE; i++) {
@@ -35,7 +35,8 @@ function fftPower(re: Float32Array, im: Float32Array): Float32Array {
     const wRe = Math.cos(ang);
     const wIm = Math.sin(ang);
     for (let i = 0; i < n; i += len) {
-      let curRe = 1, curIm = 0;
+      let curRe = 1,
+        curIm = 0;
       for (let k = 0; k < len / 2; k++) {
         const uRe = re[i + k];
         const uIm = im[i + k];
@@ -76,7 +77,7 @@ function simulateProcessFFT(chunks: Uint8Array[]): number {
   for (const raw of chunks) {
     const n = raw.length & ~1;
     for (let i = 0; i < n; i += 2) {
-      iqBuf[iqBufIdx * 2]     = (raw[i]     - 127.5) / 127.5;
+      iqBuf[iqBufIdx * 2] = (raw[i] - 127.5) / 127.5;
       iqBuf[iqBufIdx * 2 + 1] = (raw[i + 1] - 127.5) / 127.5;
       iqBufIdx = (iqBufIdx + 1) % FFT_SIZE;
       if (iqBufFilled < FFT_SIZE) iqBufFilled++;
@@ -90,7 +91,7 @@ function simulateProcessFFT(chunks: Uint8Array[]): number {
       const im = new Float32Array(FFT_SIZE);
       for (let k = 0; k < FFT_SIZE; k++) {
         const idx = (iqBufIdx + k) % FFT_SIZE;
-        re[k] = iqBuf[idx * 2]     * hannWindow[k];
+        re[k] = iqBuf[idx * 2] * hannWindow[k];
         im[k] = iqBuf[idx * 2 + 1] * hannWindow[k];
       }
 
@@ -110,8 +111,8 @@ function simulateProcessFFT(chunks: Uint8Array[]): number {
 
 // ── Waterfall colour LUT (duplicated from WaterfallPanel.tsx) ────────────────
 
-const DB_MIN   = -110;
-const DB_MAX   = -30;
+const DB_MIN = -110;
+const DB_MAX = -30;
 const DB_RANGE = DB_MAX - DB_MIN;
 
 function dbToLutIndex(db: number): number {
@@ -138,24 +139,28 @@ describe('FFT processing rate', () => {
     console.log(`FFT frames emitted from one 65536-byte chunk: ${frames}`);
   });
 
-  it('fills 400 waterfall rows in under 5 seconds of simulated data at 2.4 Msps', { timeout: 30_000 }, () => {
-    // At 2.4 Msps, 65536 bytes = 32768 IQ pairs ≈ 13.6 ms of data.
-    // 5 seconds = 5000 / 13.6 ≈ 367 chunks.
-    const CHUNK_SIZE = 65536;
-    const CHUNKS_FOR_5_SEC = Math.ceil(5000 / (CHUNK_SIZE / 2 / 2_400_000 * 1000));
+  it(
+    'fills 400 waterfall rows in under 5 seconds of simulated data at 2.4 Msps',
+    { timeout: 30_000 },
+    () => {
+      // At 2.4 Msps, 65536 bytes = 32768 IQ pairs ≈ 13.6 ms of data.
+      // 5 seconds = 5000 / 13.6 ≈ 367 chunks.
+      const CHUNK_SIZE = 65536;
+      const CHUNKS_FOR_5_SEC = Math.ceil(5000 / ((CHUNK_SIZE / 2 / 2_400_000) * 1000));
 
-    const chunks: Uint8Array[] = [];
-    for (let c = 0; c < CHUNKS_FOR_5_SEC; c++) {
-      const chunk = new Uint8Array(CHUNK_SIZE);
-      for (let i = 0; i < CHUNK_SIZE; i++) chunk[i] = 128;
-      chunks.push(chunk);
+      const chunks: Uint8Array[] = [];
+      for (let c = 0; c < CHUNKS_FOR_5_SEC; c++) {
+        const chunk = new Uint8Array(CHUNK_SIZE);
+        for (let i = 0; i < CHUNK_SIZE; i++) chunk[i] = 128;
+        chunks.push(chunk);
+      }
+
+      const frames = simulateProcessFFT(chunks);
+      console.log(`Frames in 5s of simulated data (${CHUNKS_FOR_5_SEC} chunks): ${frames}`);
+      // 400 rows needed to fill waterfall
+      expect(frames).toBeGreaterThan(400);
     }
-
-    const frames = simulateProcessFFT(chunks);
-    console.log(`Frames in 5s of simulated data (${CHUNKS_FOR_5_SEC} chunks): ${frames}`);
-    // 400 rows needed to fill waterfall
-    expect(frames).toBeGreaterThan(400);
-  });
+  );
 });
 
 describe('Waterfall dB → colour mapping', () => {
@@ -164,14 +169,14 @@ describe('Waterfall dB → colour mapping', () => {
     const idx = dbToLutIndex(-75);
     // -75 within [-110,-30]: index = round((-75 - -110) / 80 * 255) = round(35/80*255) = round(111.6) = 112
     expect(idx).toBe(112);
-    expect(idx).toBeGreaterThan(0);  // not black
+    expect(idx).toBeGreaterThan(0); // not black
   });
 
   it('maps strong signal (-45 dB) to a bright colour index', () => {
     const idx = dbToLutIndex(-45);
     // round((-45 - -110) / 80 * 255) = round(65/80*255) = round(207.2) = 207
     expect(idx).toBe(207);
-    expect(idx).toBeGreaterThan(128);  // bright, above midpoint
+    expect(idx).toBeGreaterThan(128); // bright, above midpoint
   });
 
   it('clamps values below DB_MIN to index 0', () => {
@@ -186,7 +191,9 @@ describe('Waterfall dB → colour mapping', () => {
     // Build the LUT inline (matches WaterfallPanel.tsx buildColorLut)
     const lut = new Uint8ClampedArray(256 * 4);
     for (let i = 0; i < 256; i++) {
-      let r = 0, g = 0, b = 0;
+      let r = 0,
+        g = 0,
+        b = 0;
       if (i < 64) {
         b = Math.round((i / 63) * 200);
       } else if (i < 128) {
@@ -204,14 +211,14 @@ describe('Waterfall dB → colour mapping', () => {
         g = 255;
         b = Math.round(t * 255);
       }
-      lut[i * 4]     = r;
+      lut[i * 4] = r;
       lut[i * 4 + 1] = g;
       lut[i * 4 + 2] = b;
       lut[i * 4 + 3] = 255;
     }
 
     // With DB range [-110,-30], -84 dB → index = round(26/80*255) = round(82.9) = 83
-    const idx = dbToLutIndex(-84);  // 83
+    const idx = dbToLutIndex(-84); // 83
     expect(idx).toBe(83);
     const r = lut[idx * 4];
     const g = lut[idx * 4 + 1];
@@ -220,9 +227,9 @@ describe('Waterfall dB → colour mapping', () => {
 
     // Index 83 is in the 64-127 band: blue+green ramp (cyan transition).
     // Key invariants: opaque, has blue component, no red yet.
-    expect(a).toBe(255);             // opaque
+    expect(a).toBe(255); // opaque
     expect(bVal).toBeGreaterThan(0); // has blue
-    expect(r).toBe(0);               // no red below index 128
+    expect(r).toBe(0); // no red below index 128
     console.log(`-84 dB → LUT[${idx}] = rgba(${r},${g},${bVal},${a})`);
   });
 });

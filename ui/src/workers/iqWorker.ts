@@ -27,9 +27,9 @@ let fftFrameCount = 0;
 
 // Ring buffer holds FFT_SIZE IQ pairs (2 floats each)
 const iqBuf = new Float32Array(FFT_SIZE * 2).fill(0);
-let iqBufIdx = 0;       // write head (in IQ pairs)
-let iqBufFilled = 0;    // how many pairs are valid
-let strideCount = 0;    // samples since last FFT trigger
+let iqBufIdx = 0; // write head (in IQ pairs)
+let iqBufFilled = 0; // how many pairs are valid
+let strideCount = 0; // samples since last FFT trigger
 
 function fftPower(re: Float32Array, im: Float32Array): Float32Array {
   const n = re.length;
@@ -48,7 +48,8 @@ function fftPower(re: Float32Array, im: Float32Array): Float32Array {
     const wRe = Math.cos(ang);
     const wIm = Math.sin(ang);
     for (let i = 0; i < n; i += len) {
-      let curRe = 1, curIm = 0;
+      let curRe = 1,
+        curIm = 0;
       for (let k = 0; k < len / 2; k++) {
         const uRe = re[i + k];
         const uIm = im[i + k];
@@ -79,7 +80,7 @@ function fftPower(re: Float32Array, im: Float32Array): Float32Array {
 function processFFT(raw: Uint8Array): void {
   const n = raw.length & ~1;
   for (let i = 0; i < n; i += 2) {
-    iqBuf[iqBufIdx * 2]     = (raw[i]     - 127.5) / 127.5;
+    iqBuf[iqBufIdx * 2] = (raw[i] - 127.5) / 127.5;
     iqBuf[iqBufIdx * 2 + 1] = (raw[i + 1] - 127.5) / 127.5;
     iqBufIdx = (iqBufIdx + 1) % FFT_SIZE;
     if (iqBufFilled < FFT_SIZE) iqBufFilled++;
@@ -93,7 +94,7 @@ function processFFT(raw: Uint8Array): void {
     const im = new Float32Array(FFT_SIZE);
     for (let k = 0; k < FFT_SIZE; k++) {
       const idx = (iqBufIdx + k) % FFT_SIZE;
-      re[k] = iqBuf[idx * 2]     * hannWindow[k];
+      re[k] = iqBuf[idx * 2] * hannWindow[k];
       im[k] = iqBuf[idx * 2 + 1] * hannWindow[k];
     }
 
@@ -105,7 +106,12 @@ function processFFT(raw: Uint8Array): void {
       const bins = Array.from(fftAccum, (v) => v / FFT_AVERAGES);
       fftFrameCount = 0;
       fftAccum.fill(0);
-      self.postMessage({ type: 'fft', bins, centerFreq: RF_CENTER_HZ, sampleRate: SDR_SAMPLE_RATE } as IQWorkerMessage);
+      self.postMessage({
+        type: 'fft',
+        bins,
+        centerFreq: RF_CENTER_HZ,
+        sampleRate: SDR_SAMPLE_RATE,
+      } as IQWorkerMessage);
     }
   }
 }
@@ -113,7 +119,7 @@ function processFFT(raw: Uint8Array): void {
 // ── WebSocket connection ───────────────────────────────────────────────────────
 
 const WS_PROTO = self.location.protocol === 'https:' ? 'wss:' : 'ws:';
-const WS_URL   = `${WS_PROTO}//${self.location.host}/ws/iq`;
+const WS_URL = `${WS_PROTO}//${self.location.host}/ws/iq`;
 
 let ws: WebSocket | null = null;
 
@@ -122,11 +128,21 @@ function connect(): void {
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
-    self.postMessage({ type: 'status', connected: true,  centerFreq: RF_CENTER_HZ, sampleRate: SDR_SAMPLE_RATE } as IQWorkerMessage);
+    self.postMessage({
+      type: 'status',
+      connected: true,
+      centerFreq: RF_CENTER_HZ,
+      sampleRate: SDR_SAMPLE_RATE,
+    } as IQWorkerMessage);
   };
 
   ws.onclose = () => {
-    self.postMessage({ type: 'status', connected: false, centerFreq: RF_CENTER_HZ, sampleRate: SDR_SAMPLE_RATE } as IQWorkerMessage);
+    self.postMessage({
+      type: 'status',
+      connected: false,
+      centerFreq: RF_CENTER_HZ,
+      sampleRate: SDR_SAMPLE_RATE,
+    } as IQWorkerMessage);
     setTimeout(connect, 3000);
   };
 

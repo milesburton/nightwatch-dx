@@ -56,14 +56,11 @@ def kaiser_lowpass(cutoff: float, sample_rate: float, duration: float = 0.001, b
     num_taps = int(duration * sample_rate) | 1
     center   = (num_taps - 1) / 2
     norm_cut = 2.0 * cutoff / sample_rate
-    n        = np.arange(num_taps)
-    x        = n - center
+    x        = np.arange(num_taps) - center
     with np.errstate(invalid='ignore', divide='ignore'):
         sinc = np.where(x == 0, norm_cut, np.sin(np.pi * x * norm_cut) / (np.pi * x))
-    window   = np.kaiser(num_taps, beta)
-    taps     = sinc * window
-    taps    /= taps.sum()
-    return taps.astype(np.float32)
+    taps = sinc * np.kaiser(num_taps, beta)
+    return (taps / taps.sum()).astype(np.float32)
 
 _taps1 = kaiser_lowpass(INTERMEDIATE / 2, SDR_SAMPLE_RATE)
 _taps2 = kaiser_lowpass(AUDIO_RATE   / 2, INTERMEDIATE)
@@ -71,29 +68,21 @@ _taps2 = kaiser_lowpass(AUDIO_RATE   / 2, INTERMEDIATE)
 # ── LO oscillator ─────────────────────────────────────────────────────────────
 
 class LOOscillator:
+    """Phase-continuous complex LO for frequency downconversion.
+
+    Generates exp(j·2π·f·t) vectorised over each call, maintaining
+    phase across successive calls so the waveform is continuous.
+    Phase is renormalised every call to prevent floating-point drift.
+    """
+
     def __init__(self, freq_hz: float, sample_rate: float) -> None:
-        step           = 2 * np.pi * freq_hz / sample_rate
-        self._step_re  = float(np.cos(step))
-        self._step_im  = float(-np.sin(step))
-        self._re       = 1.0
-        self._im       = 0.0
-        self._norm_ctr = 0
+        self._step  = 2 * np.pi * freq_hz / sample_rate
+        self._phase = 0.0
 
     def generate(self, n: int) -> np.ndarray:
-        out = np.empty(n, dtype=np.complex64)
-        re, im = self._re, self._im
-        sr, si  = self._step_re, self._step_im
-        for i in range(n):
-            out[i] = complex(re, im)
-            re, im = re * sr - im * si, re * si + im * sr
-            self._norm_ctr += 1
-            if self._norm_ctr >= 1000:
-                mag = (re * re + im * im) ** 0.5
-                re /= mag
-                im /= mag
-                self._norm_ctr = 0
-        self._re, self._im = re, im
-        return out
+        phases      = self._phase + self._step * np.arange(n)
+        self._phase = float(phases[-1] + self._step) % (2 * np.pi)
+        return np.exp(-1j * phases).astype(np.complex64)
 
 # ── SSTV signal chain ──────────────────────────────────────────────────────────
 

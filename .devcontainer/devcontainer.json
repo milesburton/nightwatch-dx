@@ -1,0 +1,49 @@
+{
+  "name": "dx-watch",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        // Python
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "ms-python.mypy-type-checker",
+        "charliermarsh.ruff",
+        // TypeScript / React
+        "biomejs.biome",
+        "bradlc.vscode-tailwindcss",
+        "esbenp.prettier-vscode",
+        // Docker / containers
+        "ms-azuretools.vscode-docker",
+        "ms-vscode-remote.remote-containers",
+        // Git / GitHub
+        "eamodio.gitlens",
+        "github.vscode-pull-request-github",
+        // General DX
+        "usernamehw.errorlens",
+        "streetsidesoftware.code-spell-checker",
+        "gruntfuggly.todo-tree"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "fish",
+        "terminal.integrated.profiles.linux": {
+          "fish": {
+            "path": "/usr/bin/fish"
+          }
+        },
+        "editor.formatOnSave": true,
+        "editor.defaultFormatter": "biomejs.biome",
+        "[python]": {
+          "editor.defaultFormatter": "charliermarsh.ruff"
+        },
+        "python.defaultInterpreterPath": "/usr/local/bin/python3",
+        "ruff.enable": true,
+        "mypy-type-checker.enabled": true
+      }
+    }
+  },
+  "postCreateCommand": "bash .devcontainer/postCreate.sh",
+  "remoteUser": "vscode"
+}

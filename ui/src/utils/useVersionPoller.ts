@@ -29,7 +29,9 @@ export function useVersionPoller() {
       }
     };
 
-    const id = setInterval(() => { void check(); }, POLL_INTERVAL_MS);
+    const id = setInterval(() => {
+      void check();
+    }, POLL_INTERVAL_MS);
     return () => clearInterval(id);
   }, []);
 }
