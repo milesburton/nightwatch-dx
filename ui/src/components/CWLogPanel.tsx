@@ -123,7 +123,6 @@ export function CWLogPanel() {
   const liveFreqRef = useRef(14_029_000);
   const liveStartRef = useRef('');
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const bottomRef = useRef<HTMLDivElement>(null);
 
   // ── Load persisted sessions on mount ───────────────────────────────────────
   useEffect(() => {
@@ -221,12 +220,6 @@ export function CWLogPanel() {
     };
   }, [resetTimer]);
 
-  // Auto-scroll live view
-  useEffect(() => {
-    if (selectedId === 'live' && liveText) {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-    }
-  }, [liveText, selectedId]);
 
   // ── Render helpers ──────────────────────────────────────────────────────────
   const selectedSession =
@@ -321,8 +314,8 @@ export function CWLogPanel() {
                   {connected ? 'Waiting for CW signal…' : 'Connecting…'}
                 </p>
               )}
-              <div ref={bottomRef} />
             </>
+
           ) : selectedSession ? (
             <>
               <p className="text-white/30 text-xs mb-3">

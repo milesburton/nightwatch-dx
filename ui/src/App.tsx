@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { CWLogPanel } from './components/CWLogPanel.js';
 import { SSTVGalleryPanel } from './components/SSTVGalleryPanel.js';
 import { WaterfallPanel } from './components/WaterfallPanel.js';
-import { addIQListener } from './workers/iqWorkerSingleton.js';
-import { useVersionPoller } from './utils/useVersionPoller.js';
 import type { CWSocketMessage } from './types.js';
+import { useVersionPoller } from './utils/useVersionPoller.js';
+import { addIQListener } from './workers/iqWorkerSingleton.js';
 
 // ── Starfield background ───────────────────────────────────────────────────────
 
@@ -61,20 +61,20 @@ function useStarfield() {
 
 // A signal is considered "active" if we received something from it within
 // the last ACTIVE_TTL_MS milliseconds.
-const ACTIVE_TTL_MS  = 10_000;
+const ACTIVE_TTL_MS = 10_000;
 // Hardware is considered down if no FFT data for this long (rtl_tcp crashed/unplugged).
 // 15 s gives the iqWorker time to fill its ring buffer and send the first FFT on startup.
-const HW_TIMEOUT_MS  = 15_000;
+const HW_TIMEOUT_MS = 15_000;
 
 function useSignalStatus() {
-  const [iqConnected,  setIqConnected]  = useState(false);
-  const [hwDown,       setHwDown]       = useState(false);
-  const [cwActive,     setCwActive]     = useState(false);
-  const [sstActive,    setSstActive]    = useState(false);
+  const [iqConnected, setIqConnected] = useState(false);
+  const [hwDown, setHwDown] = useState(false);
+  const [cwActive, setCwActive] = useState(false);
+  const [sstActive, setSstActive] = useState(false);
 
-  const cwTimer  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const cwTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sstTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const hwTimer  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hwTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // IQ / spectrum — track connection AND data flow
   useEffect(() => {
@@ -107,7 +107,9 @@ function useSignalStatus() {
           if (cwTimer.current) clearTimeout(cwTimer.current);
           cwTimer.current = setTimeout(() => setCwActive(false), ACTIVE_TTL_MS);
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     };
 
     return () => {
@@ -129,7 +131,9 @@ function useSignalStatus() {
           if (sstTimer.current) clearTimeout(sstTimer.current);
           sstTimer.current = setTimeout(() => setSstActive(false), ACTIVE_TTL_MS);
         }
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     };
 
     return () => {
@@ -141,7 +145,12 @@ function useSignalStatus() {
   return { iqConnected, hwDown, cwActive, sstActive };
 }
 
-function Subtitle({ iqConnected, hwDown, cwActive, sstActive }: {
+function Subtitle({
+  iqConnected,
+  hwDown,
+  cwActive,
+  sstActive,
+}: {
   iqConnected: boolean;
   hwDown: boolean;
   cwActive: boolean;
@@ -155,7 +164,7 @@ function Subtitle({ iqConnected, hwDown, cwActive, sstActive }: {
     parts.push('Connecting…');
   } else {
     parts.push('Scanning 20m');
-    if (cwActive)  parts.push('CW Active');
+    if (cwActive) parts.push('CW Active');
     if (sstActive) parts.push('SSTV Active');
   }
 
@@ -164,11 +173,15 @@ function Subtitle({ iqConnected, hwDown, cwActive, sstActive }: {
       {parts.map((part, i) => (
         <span key={part}>
           {i > 0 && <span className="text-white/25"> · </span>}
-          <span className={
-            part === 'SDR Hardware Offline' ? 'text-red-400' :
-            (part === 'CW Active' || part === 'SSTV Active') ? 'text-emerald-400' :
-            undefined
-          }>
+          <span
+            className={
+              part === 'SDR Hardware Offline'
+                ? 'text-red-400'
+                : part === 'CW Active' || part === 'SSTV Active'
+                  ? 'text-emerald-400'
+                  : undefined
+            }
+          >
             {part}
           </span>
         </span>
@@ -179,10 +192,29 @@ function Subtitle({ iqConnected, hwDown, cwActive, sstActive }: {
 
 // ── App ────────────────────────────────────────────────────────────────────────
 
+function useDocumentTitle(hwDown: boolean, iqConnected: boolean, cwActive: boolean, sstActive: boolean) {
+  useEffect(() => {
+    if (hwDown) {
+      document.title = '⚠ Offline — ionosphere-hf';
+    } else if (!iqConnected) {
+      document.title = 'Connecting… — ionosphere-hf';
+    } else if (cwActive && sstActive) {
+      document.title = '● CW + SSTV — ionosphere-hf';
+    } else if (cwActive) {
+      document.title = '● CW Active — ionosphere-hf';
+    } else if (sstActive) {
+      document.title = '● SSTV Active — ionosphere-hf';
+    } else {
+      document.title = 'Scanning 20m — ionosphere-hf';
+    }
+  }, [hwDown, iqConnected, cwActive, sstActive]);
+}
+
 export default function App() {
   useStarfield();
   useVersionPoller();
   const { iqConnected, hwDown, cwActive, sstActive } = useSignalStatus();
+  useDocumentTitle(hwDown, iqConnected, cwActive, sstActive);
 
   return (
     <>
@@ -196,10 +228,12 @@ export default function App() {
           role="alert"
           aria-live="assertive"
         >
-          <div className="flex items-center justify-center gap-2 px-4 py-2"
-               style={{ background: 'rgba(220,38,38,0.75)' }}>
+          <div
+            className="flex items-center justify-center gap-2 px-4 py-2"
+            style={{ background: 'rgba(220,38,38,0.75)' }}
+          >
             <span className="text-white font-bold text-sm tracking-wider uppercase">
-              ⚠ SDR Hardware Offline — check RTL-SDR USB connection on the N100
+              ⚠ SDR Hardware Offline — check RTL-SDR USB connection
             </span>
           </div>
         </div>
@@ -208,9 +242,14 @@ export default function App() {
       <div className="w-full max-w-7xl mx-auto px-6 py-10">
         <header className="text-center mb-10">
           <h1 className="text-5xl font-bold mb-3 tracking-tight text-white drop-shadow-lg">
-            20m Signal Decoder
+            ionosphere-hf
           </h1>
-          <Subtitle iqConnected={iqConnected} hwDown={hwDown} cwActive={cwActive} sstActive={sstActive} />
+          <Subtitle
+            iqConnected={iqConnected}
+            hwDown={hwDown}
+            cwActive={cwActive}
+            sstActive={sstActive}
+          />
         </header>
 
         <main className="flex flex-col gap-6">
@@ -225,12 +264,12 @@ export default function App() {
           </div>
           <div>
             <a
-              href="https://github.com/milesburton/gmktec-sdr-project"
+              href="https://github.com/milesburton/ionosphere-hf"
               target="_blank"
               rel="noopener noreferrer"
               className="text-white/40 hover:text-white/70 transition-colors"
             >
-              milesburton/gmktec-sdr-project
+              milesburton/ionosphere-hf
             </a>
           </div>
         </footer>

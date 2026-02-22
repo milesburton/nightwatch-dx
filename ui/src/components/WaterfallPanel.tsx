@@ -6,7 +6,9 @@ import { addIQListener } from '../workers/iqWorkerSingleton.js';
 function buildColorLut(): Uint8ClampedArray {
   const lut = new Uint8ClampedArray(256 * 4);
   for (let i = 0; i < 256; i++) {
-    let r = 0, g = 0, b = 0;
+    let r = 0,
+      g = 0,
+      b = 0;
     if (i < 64) {
       b = Math.round((i / 63) * 200);
     } else if (i < 128) {
@@ -24,7 +26,7 @@ function buildColorLut(): Uint8ClampedArray {
       g = 255;
       b = Math.round(t * 255);
     }
-    lut[i * 4]     = r;
+    lut[i * 4] = r;
     lut[i * 4 + 1] = g;
     lut[i * 4 + 2] = b;
     lut[i * 4 + 3] = 255;
@@ -34,8 +36,8 @@ function buildColorLut(): Uint8ClampedArray {
 
 const COLOR_LUT = buildColorLut();
 
-const DB_MIN   = -110;
-const DB_MAX   = -30;
+const DB_MIN = -120;
+const DB_MAX = -50;
 const DB_RANGE = DB_MAX - DB_MIN;
 
 function dbToLutIndex(db: number): number {
@@ -60,14 +62,14 @@ function freqToX(freqHz: number, centerHz: number, sampleRate: number, width: nu
 }
 
 const SPECTRUM_HEIGHT = 80;
-const WATERFALL_ROWS  = 400;
+const WATERFALL_ROWS = 400;
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export function WaterfallPanel() {
   const specCanvasRef = useRef<HTMLCanvasElement>(null);
-  const wfCanvasRef   = useRef<HTMLCanvasElement>(null);
-  const [connected, setConnected]   = useState(false);
+  const wfCanvasRef = useRef<HTMLCanvasElement>(null);
+  const [connected, setConnected] = useState(false);
   const [centerFreq, setCenterFreq] = useState<number | null>(null);
   const [sampleRate, setSampleRate] = useState<number | null>(null);
   const wfDataRef = useRef<ImageData | null>(null);
@@ -87,7 +89,7 @@ export function WaterfallPanel() {
       setSampleRate(sr);
 
       const specCanvas = specCanvasRef.current;
-      const wfCanvas   = wfCanvasRef.current;
+      const wfCanvas = wfCanvasRef.current;
       if (!specCanvas || !wfCanvas) return;
 
       // If the container hasn't been measured yet, size the canvases now.
@@ -96,10 +98,10 @@ export function WaterfallPanel() {
         const containerW = Math.floor(wfCanvas.getBoundingClientRect().width);
         if (containerW === 0) return;
         W = containerW;
-        specCanvas.width  = containerW;
+        specCanvas.width = containerW;
         specCanvas.height = SPECTRUM_HEIGHT;
-        wfCanvas.width    = containerW;
-        wfCanvas.height   = WATERFALL_ROWS;
+        wfCanvas.width = containerW;
+        wfCanvas.height = WATERFALL_ROWS;
         wfDataRef.current = null;
       }
 
@@ -111,7 +113,7 @@ export function WaterfallPanel() {
         specCtx.clearRect(0, 0, W, SPECTRUM_HEIGHT);
 
         specCtx.strokeStyle = 'rgba(255,255,255,0.06)';
-        specCtx.lineWidth   = 1;
+        specCtx.lineWidth = 1;
         for (let db = DB_MIN; db <= DB_MAX; db += 10) {
           const normY = (db - DB_MIN) / DB_RANGE;
           const y = Math.round(normY * SPECTRUM_HEIGHT);
@@ -163,7 +165,11 @@ export function WaterfallPanel() {
       const wfCtx = wfCanvas.getContext('2d');
       if (!wfCtx) return;
 
-      if (!wfDataRef.current || wfDataRef.current.width !== W || wfDataRef.current.height !== WATERFALL_ROWS) {
+      if (
+        !wfDataRef.current ||
+        wfDataRef.current.width !== W ||
+        wfDataRef.current.height !== WATERFALL_ROWS
+      ) {
         wfDataRef.current = wfCtx.createImageData(W, WATERFALL_ROWS);
         // Pre-fill alpha to 255 so all rows are opaque black until data arrives.
         // createImageData initialises to all-zero which makes pixels transparent,
@@ -184,8 +190,8 @@ export function WaterfallPanel() {
       const N = bins.length;
       for (let x = 0; x < W; x++) {
         const binIdx = Math.floor((x / W) * N);
-        const lut    = dbToLutIndex(bins[Math.min(binIdx, N - 1)]);
-        wfData.data[x * 4]     = COLOR_LUT[lut * 4];
+        const lut = dbToLutIndex(bins[Math.min(binIdx, N - 1)]);
+        wfData.data[x * 4] = COLOR_LUT[lut * 4];
         wfData.data[x * 4 + 1] = COLOR_LUT[lut * 4 + 1];
         wfData.data[x * 4 + 2] = COLOR_LUT[lut * 4 + 2];
         wfData.data[x * 4 + 3] = 255;
@@ -195,7 +201,7 @@ export function WaterfallPanel() {
 
       if (cf && sr) {
         wfCtx.strokeStyle = 'rgba(255,255,255,0.2)';
-        wfCtx.lineWidth   = 1;
+        wfCtx.lineWidth = 1;
         wfCtx.setLineDash([4, 6]);
         for (const m of BAND_MARKERS) {
           const x = freqToX(m.freqHz, cf, sr, W);
@@ -219,11 +225,11 @@ export function WaterfallPanel() {
       const W = container.clientWidth || Math.floor(container.getBoundingClientRect().width);
       if (W === 0) return;
       if (specCanvasRef.current) {
-        specCanvasRef.current.width  = W;
+        specCanvasRef.current.width = W;
         specCanvasRef.current.height = SPECTRUM_HEIGHT;
       }
       if (wfCanvasRef.current) {
-        wfCanvasRef.current.width  = W;
+        wfCanvasRef.current.width = W;
         wfCanvasRef.current.height = WATERFALL_ROWS;
       }
       wfDataRef.current = null;
@@ -259,8 +265,10 @@ export function WaterfallPanel() {
           style={{ height: `${SPECTRUM_HEIGHT}px` }}
         />
         <div className="absolute top-0 right-1 h-full flex flex-col justify-between pointer-events-none">
-          {[-50, -62, -75, -87, -100].map((db) => (
-            <span key={db} className="text-white/30 text-[9px] font-mono leading-none">{db}</span>
+          {[-50, -63, -77, -90, -103].map((db) => (
+            <span key={db} className="text-white/30 text-[9px] font-mono leading-none">
+              {db}
+            </span>
           ))}
         </div>
       </div>
@@ -268,13 +276,15 @@ export function WaterfallPanel() {
       <canvas
         ref={wfCanvasRef}
         className="w-full block rounded-b-lg"
-        style={{ height: `${WATERFALL_ROWS}px`, imageRendering: 'pixelated', minHeight: `${WATERFALL_ROWS}px` }}
+        style={{
+          height: `${WATERFALL_ROWS}px`,
+          imageRendering: 'pixelated',
+          minHeight: `${WATERFALL_ROWS}px`,
+        }}
       />
 
       {!connected && (
-        <p className="text-white/30 text-xs text-center mt-2 italic">
-          Connecting to IQ stream…
-        </p>
+        <p className="text-white/30 text-xs text-center mt-2 italic">Connecting to IQ stream…</p>
       )}
     </div>
   );
