@@ -8,7 +8,7 @@
 
 Live HF signal monitoring over the 20m amateur band (14.0–14.35 MHz). Receives IQ samples from an RTL-SDR dongle with an HF upconverter, decodes CW (Morse code) and SSTV in real time, and displays everything in a browser dashboard.
 
-The name reflects what the system actually observes: HF radio propagation via ionospheric reflection — signals bouncing between the earth and the various layers of the ionosphere (D, E, F1, F2) to reach receivers thousands of kilometres away.
+DX is amateur radio shorthand for long-distance contact — signals reaching across continents via ionospheric reflection. This project watches for them.
 
 ## Architecture
 
