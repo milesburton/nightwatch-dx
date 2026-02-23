@@ -120,12 +120,13 @@ class AudioToBaseband:
     """
 
     def __init__(self) -> None:
-        self._lo       = LOOscillator(1500.0, DRM_RATE)
         self._dc_state = 0.0
         self._buf: list[float] = []
         # Resample 24k→12k: keep every 2nd sample (already low-pass filtered)
         self._decimate = AUDIO_RATE // DRM_RATE   # = 2
         self._phase    = 0.0
+        self._lo_phase = 0.0  # phase accumulator for -1500 Hz LO
+        self._lo_step  = -2.0 * np.pi * 1500.0 / DRM_RATE
 
     def process(self, audio: np.ndarray) -> np.ndarray:
         """Returns complex baseband samples at DRM_RATE."""
@@ -145,8 +146,10 @@ class AudioToBaseband:
         # Re-create complex analytic signal
         sig = np.exp(1j * phases).astype(np.complex64)
 
-        # Mix down to centre EasyPal at DC
-        lo  = self._lo.generate(n)
+        # Mix down to centre EasyPal at DC using stateful phase accumulator
+        lo_phases = self._lo_phase + self._lo_step * np.arange(n)
+        self._lo_phase = float(lo_phases[-1] + self._lo_step)
+        lo  = np.exp(1j * lo_phases).astype(np.complex64)
         sig = sig * lo
 
         # DC block (leaky integrator)
