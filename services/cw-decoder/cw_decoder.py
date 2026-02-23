@@ -257,9 +257,17 @@ WORD_GAP_DITS = 5.0   # inter-word gap > 5× dit triggers word space
 
 
 class MorseDecoder:
-    _DIT_ALPHA = 0.15
+    # Asymmetric adaptation: snap quickly toward faster senders (smaller dit),
+    # but resist inflation toward slower values caused by false dah readings
+    # (e.g. digital modes with brief dips mis-read as CW gaps).
+    _DIT_ALPHA_DOWN = 0.20   # observed shorter than estimate → speed up fast
+    _DIT_ALPHA_UP   = 0.05   # observed longer than estimate  → slow drift
     _DIT_MIN   = int(AUDIO_RATE * 0.030)
     _DIT_MAX   = int(AUDIO_RATE * 0.480)
+    # CW characters have at most 7 elements (e.g. '-------' doesn't exist, but
+    # longest real chars like '...-..-' = 7). If we accumulate more than this
+    # without a gap, the signal isn't CW — discard the run.
+    _MAX_SYMBOLS = 7
 
     def __init__(self) -> None:
         self._symbols: list[str] = []
@@ -275,8 +283,13 @@ class MorseDecoder:
             return
         is_dit = duration < dit * DAH_THRESHOLD
         self._symbols.append('.' if is_dit else '-')
+        # If we've accumulated an impossibly long sequence, it's not CW — reset.
+        if len(self._symbols) > self._MAX_SYMBOLS:
+            self._symbols = []
+            return
         observed = duration if is_dit else duration / 3.0
-        self._dit_est += self._DIT_ALPHA * (observed - self._dit_est)
+        alpha = self._DIT_ALPHA_DOWN if observed < self._dit_est else self._DIT_ALPHA_UP
+        self._dit_est += alpha * (observed - self._dit_est)
 
     def push_gap(self, duration: int) -> list[dict]:
         dits = duration / self.dit

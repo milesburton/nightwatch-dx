@@ -87,13 +87,31 @@ function CWText({ tokens, cursor }: { tokens: CWToken[]; cursor?: boolean }) {
   );
 }
 
+function copyToClipboard(text: string): Promise<void> {
+  // navigator.clipboard requires a secure context (HTTPS / localhost).
+  // Fall back to the legacy execCommand approach for plain-HTTP home-lab use.
+  if (navigator.clipboard) {
+    return navigator.clipboard.writeText(text);
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.focus();
+  ta.select();
+  document.execCommand('copy');
+  document.body.removeChild(ta);
+  return Promise.resolve();
+}
+
 function CopyButton({ text }: { text: string }) {
   const [copied, setCopied] = useState(false);
   return (
     <button
       type="button"
       onClick={() => {
-        navigator.clipboard.writeText(text).then(() => {
+        copyToClipboard(text).then(() => {
           setCopied(true);
           setTimeout(() => setCopied(false), 1500);
         });
