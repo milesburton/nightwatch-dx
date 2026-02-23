@@ -23,13 +23,14 @@ EXPOSE 1235 1236 1237 1238 1239 1240
 # -s 1200000   = 1.2 Msps — stable RTL-SDR rate, half the data vs 2.4 Msps.
 #                RTL-SDRs are modified TV tuners; 2.4 Msps is near their USB limit
 #                and causes sample drops. 1.2 Msps is rock-solid on all hardware.
-# -g 144       = 14.4 dB — R820T gain in tenths of dB.
+# -g 77        = 7.7 dB — R820T gain in tenths of dB.
 #                R820T steps: 0,9,14,27,37,77,87,125,144,157,166,197,207,229,
 #                254,280,297,328,338,364,372,386,402,421 (tenths dB).
-#                Was 197 (19.7 dB) — reduced to 144 (14.4 dB) to reduce noise floor.
+#                Was 144 (14.4 dB) — reduced further because narrower 1.2 Msps
+#                bandwidth concentrates noise, causing the display to saturate.
 # rtl_biast -b 1 must run first to power the NooElec HF upconverter via bias-T,
 # then release the device so rtl_tcp can claim it.
 CMD rtl_biast -b 1 && \
-    rtl_tcp -a 0.0.0.0 -p 1234 -f 139131000 -s 1200000 -g 144 -T & \
+    rtl_tcp -a 0.0.0.0 -p 1234 -f 139131000 -s 1200000 -g 77 -T & \
     sleep 2 && \
     python3 -u rtl_bridge.py
