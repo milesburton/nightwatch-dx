@@ -89,10 +89,11 @@ function CWText({ tokens, cursor }: { tokens: CWToken[]; cursor?: boolean }) {
 
 function copyToClipboard(text: string): Promise<void> {
   // navigator.clipboard requires a secure context (HTTPS / localhost).
-  // Fall back to the legacy execCommand approach for plain-HTTP home-lab use.
-  if (navigator.clipboard) {
+  // On plain HTTP, navigator.clipboard exists but is undefined — check writeText.
+  if (typeof navigator.clipboard?.writeText === 'function') {
     return navigator.clipboard.writeText(text);
   }
+  // Legacy execCommand fallback for plain-HTTP home-lab use.
   const ta = document.createElement('textarea');
   ta.value = text;
   ta.style.position = 'fixed';
