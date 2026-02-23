@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { CWLogPanel } from './components/CWLogPanel.js';
 import { EasyPalGalleryPanel } from './components/EasyPalGalleryPanel.js';
+import { PSK31Panel } from './components/PSK31Panel.js';
 import { ServerStatusPanel } from './components/ServerStatusPanel.js';
 import { SSTVGalleryPanel } from './components/SSTVGalleryPanel.js';
 import { WaterfallPanel } from './components/WaterfallPanel.js';
@@ -322,6 +323,7 @@ export default function App() {
         <main className="flex flex-col gap-6">
           <WaterfallPanel />
           <CWLogPanel />
+          <PSK31Panel />
           <SSTVGalleryPanel />
           <EasyPalGalleryPanel />
           <ServerStatusPanel />

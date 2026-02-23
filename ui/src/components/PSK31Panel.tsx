@@ -1,16 +1,15 @@
 /**
- * CWLogPanel — persistent session log for CW (Morse code) transmissions.
+ * PSK31Panel — persistent session log for PSK31 transmissions.
  *
- * Receives decoded characters from the cw-decoder Python backend via
- * WebSocket at /ws/cw. Sessions are persisted in IndexedDB (sdr-monitor /
- * cw-sessions, mode = 'cw').
+ * Receives decoded characters from the psk31-decoder Python backend via
+ * WebSocket at /ws/psk31. Sessions are persisted in IndexedDB (sdr-monitor /
+ * cw-sessions, mode = 'psk31').
  *
  * Layout: Fallout-style master-detail.
  *   Left (35%): scrollable session list (newest first), amber dot for live.
  *   Right (65%): selected session text or live decode stream.
  *
- * Each decoded character is a hoverable token — plain text visible by default,
- * Morse dots/dashes revealed on hover.
+ * Scans ±2 kHz around 14.070 MHz to lock onto the strongest PSK31 carrier.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -21,67 +20,37 @@ import { useAccordion } from '../utils/useAccordion.js';
 
 const SESSION_TIMEOUT_MS = 30_000;
 
-const CHAR_TO_MORSE: Record<string, string> = {
-  A: '.-',    B: '-...',  C: '-.-.',  D: '-..',   E: '.',
-  F: '..-.',  G: '--.',   H: '....',  I: '..',    J: '.---',
-  K: '-.-',   L: '.-..',  M: '--',    N: '-.',    O: '---',
-  P: '.--.',  Q: '--.-',  R: '.-.',   S: '...',   T: '-',
-  U: '..-',   V: '...-',  W: '.--',   X: '-..-',  Y: '-.--',
-  Z: '--..',
-  '0': '-----', '1': '.----', '2': '..---', '3': '...--', '4': '....-',
-  '5': '.....', '6': '-....', '7': '--...', '8': '---..', '9': '----.',
-  '.': '.-.-.-', ',': '--..--', '?': '..--..', "'": '.----.',
-  '!': '-.-.--', '/': '-..-.', '(': '-.--.', ')': '-.--.-',
-  '&': '.-...', ':': '---...', ';': '-.-.-.', '=': '-...-',
-  '+': '.-.-.', '-': '-....-', '_': '..--.-', '"': '.-..-.',
-  '$': '...-..-', '@': '.--.-.',
-};
-
-interface CWToken {
+interface PSK31Token {
   id: number;
   char: string;
-  morse: string;
 }
 
 let _tokenId = 0;
 
-function makeToken(ch: string): CWToken {
-  return {
-    id: _tokenId++,
-    char: ch,
-    morse: ch === ' ' ? '' : (CHAR_TO_MORSE[ch.toUpperCase()] ?? '?'),
-  };
+function makeToken(ch: string): PSK31Token {
+  return { id: _tokenId++, char: ch };
 }
 
-function tokenise(text: string): CWToken[] {
+function tokenise(text: string): PSK31Token[] {
   return [...text].map(makeToken);
 }
 
-function CWChar({ token }: { token: CWToken }) {
+function PSK31Char({ token }: { token: PSK31Token }) {
   if (token.char === ' ') {
     return <span className="inline-block w-4" />;
   }
-
   return (
-    <span className="group relative inline-block cursor-default select-none">
-      <span className="group-hover:opacity-0 transition-opacity duration-100">
-        {token.char}
-      </span>
-      <span
-        className="absolute inset-0 flex items-center justify-center text-[0.65em] tracking-widest text-amber-400 whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity duration-100"
-        aria-hidden
-      >
-        {token.morse}
-      </span>
+    <span className="inline-block cursor-default select-none">
+      {token.char}
     </span>
   );
 }
 
-function CWText({ tokens, cursor }: { tokens: CWToken[]; cursor?: boolean }) {
+function PSK31Text({ tokens, cursor }: { tokens: PSK31Token[]; cursor?: boolean }) {
   return (
     <p className="text-emerald-300 text-sm leading-relaxed whitespace-pre-wrap font-mono">
       {tokens.map((tok) => (
-        <CWChar key={tok.id} token={tok} />
+        <PSK31Char key={tok.id} token={tok} />
       ))}
       {cursor && <span className="cw-cursor" />}
     </p>
@@ -149,29 +118,29 @@ interface SessionState {
   selectedId: number | 'live';
   setSelectedId: (id: number | 'live') => void;
   connected: boolean;
-  liveTokens: CWToken[];
+  liveTokens: PSK31Token[];
   liveText: string;
   liveFreq: number;
   liveStartTs: string;
 }
 
-function useCWState(open: boolean): SessionState {
+function usePSK31State(open: boolean): SessionState {
   const [sessions, setSessions] = useState<CWSession[]>([]);
   const [selectedId, setSelectedId] = useState<number | 'live'>('live');
   const [connected, setConnected] = useState(false);
-  const [liveTokens, setLiveTokens] = useState<CWToken[]>([]);
+  const [liveTokens, setLiveTokens] = useState<PSK31Token[]>([]);
   const [liveText, setLiveText] = useState('');
-  const [liveFreq, setLiveFreq] = useState<number>(14_029_000);
+  const [liveFreq, setLiveFreq] = useState<number>(14_070_000);
   const [liveStartTs, setLiveStartTs] = useState<string>('');
 
   const liveTextRef  = useRef('');
-  const liveFreqRef  = useRef(14_029_000);
+  const liveFreqRef  = useRef(14_070_000);
   const liveStartRef = useRef('');
   const timerRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     listCWSessions().then((rows) => {
-      const filtered = rows.filter((s) => (s.mode ?? 'cw') === 'cw');
+      const filtered = rows.filter((s) => (s.mode ?? 'cw') === 'psk31');
       setSessions(filtered.sort((a, b) => b.startTs.localeCompare(a.startTs)));
     });
   }, []);
@@ -184,7 +153,7 @@ function useCWState(open: boolean): SessionState {
       endTs: new Date().toISOString(),
       text,
       freqHz: liveFreqRef.current,
-      mode: 'cw',
+      mode: 'psk31',
     };
     saveCWSession(session).then(() => {
       setSessions((prev) => {
@@ -214,7 +183,7 @@ function useCWState(open: boolean): SessionState {
 
     function connect() {
       if (closed) return;
-      ws = new WebSocket(`${proto}//${location.host}/ws/cw`);
+      ws = new WebSocket(`${proto}//${location.host}/ws/psk31`);
       ws.onopen = () => {};
       ws.onclose = () => {
         setConnected(false);
@@ -278,7 +247,7 @@ function useCWState(open: boolean): SessionState {
 
 // ── Session panel (master-detail list + detail pane) ─────────────────────────
 
-function SessionPanel({ state, hintText }: { state: SessionState; hintText: string }) {
+function SessionPanel({ state }: { state: SessionState }) {
   const { sessions, selectedId, setSelectedId, connected, liveTokens,
           liveText, liveFreq, liveStartTs } = state;
 
@@ -353,10 +322,10 @@ function SessionPanel({ state, hintText }: { state: SessionState; hintText: stri
               {liveText && <CopyButton text={liveText} />}
             </div>
             {liveTokens.length > 0 ? (
-              <CWText tokens={liveTokens} cursor />
+              <PSK31Text tokens={liveTokens} cursor />
             ) : (
               <p className="text-white/20 text-xs italic">
-                {connected ? `Waiting for ${hintText} signal…` : 'Connecting…'}
+                {connected ? 'Waiting for PSK31 signal…' : 'Connecting…'}
               </p>
             )}
           </>
@@ -373,7 +342,7 @@ function SessionPanel({ state, hintText }: { state: SessionState; hintText: stri
               </p>
               <CopyButton text={selectedSession.text} />
             </div>
-            <CWText tokens={tokenise(selectedSession.text)} />
+            <PSK31Text tokens={tokenise(selectedSession.text)} />
           </>
         ) : (
           <p className="text-white/20 text-xs italic">Select a session.</p>
@@ -385,9 +354,9 @@ function SessionPanel({ state, hintText }: { state: SessionState; hintText: stri
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
-export function CWLogPanel() {
-  const [open, toggleOpen] = useAccordion('sessions-open');
-  const state = useCWState(open);
+export function PSK31Panel() {
+  const [open, toggleOpen] = useAccordion('psk31-open');
+  const state = usePSK31State(open);
 
   return (
     <div className="glass rounded-2xl overflow-hidden">
@@ -395,7 +364,7 @@ export function CWLogPanel() {
       <div className="flex items-center gap-2 px-6 py-4 border-b border-white/10">
         <div className="flex-1">
           <h2 className="text-white text-xl font-semibold tracking-wide">
-            CW — 14.029 MHz
+            PSK31 — 14.070 ±2kHz
           </h2>
           {open && (
             <p className="text-white/40 text-xs mt-0.5 font-mono">
@@ -404,25 +373,22 @@ export function CWLogPanel() {
               />
               {state.connected
                 ? `${formatFreq(state.liveFreq)} · ${state.sessions.length} sessions`
-                : 'Connecting to CW decoder…'}
+                : 'Connecting to PSK31 decoder…'}
             </p>
           )}
         </div>
-        {open && (
-          <p className="text-white/20 text-[10px] font-mono italic">hover chars for morse</p>
-        )}
         <button
           type="button"
           onClick={toggleOpen}
           className="text-white/40 hover:text-white/80 transition-colors text-xs font-mono px-2 py-0.5 rounded border border-white/10 hover:border-white/30"
-          aria-label={open ? 'Collapse CW sessions' : 'Expand CW sessions'}
+          aria-label={open ? 'Collapse PSK31 sessions' : 'Expand PSK31 sessions'}
         >
           {open ? '▲ hide' : '▼ show'}
         </button>
       </div>
 
       {/* Master-detail body */}
-      {open && <SessionPanel state={state} hintText="CW" />}
+      {open && <SessionPanel state={state} />}
     </div>
   );
 }
