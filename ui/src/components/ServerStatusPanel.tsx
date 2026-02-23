@@ -6,6 +6,7 @@
  */
 
 import { useEffect, useState } from 'react';
+import { useAccordion } from '../utils/useAccordion.js';
 
 interface StatusMessage {
   type: 'status';
@@ -59,10 +60,13 @@ function Stat({
 }
 
 export function ServerStatusPanel() {
+  const [open, toggleOpen] = useAccordion('server-status-open');
   const [stats, setStats] = useState<StatusMessage | null>(null);
   const [connected, setConnected] = useState(false);
 
+  // WebSocket to /ws/status — only while open
   useEffect(() => {
+    if (!open) return;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     let ws: WebSocket | null = null;
     let closed = false;
@@ -90,43 +94,59 @@ export function ServerStatusPanel() {
     return () => {
       closed = true;
       ws?.close();
+      setConnected(false);
     };
-  }, []);
+  }, [open]);
 
   return (
-    <div className="glass rounded-2xl p-6 flex flex-col gap-4">
-      <div className="flex items-center gap-2 pb-4 border-b border-white/10">
+    <div className="glass rounded-2xl overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center gap-2 px-6 py-4 border-b border-white/10">
         <h2 className="text-white text-xl font-semibold tracking-wide flex-1">Server Status</h2>
-        <span
-          className={`inline-block w-2 h-2 rounded-full ${connected ? 'bg-emerald-400' : 'bg-red-500'}`}
-          title={connected ? 'Connected' : 'Connecting…'}
-        />
+        {open && (
+          <span
+            className={`inline-block w-2 h-2 rounded-full ${connected ? 'bg-emerald-400' : 'bg-red-500'}`}
+            title={connected ? 'Connected' : 'Connecting…'}
+          />
+        )}
+        <button
+          type="button"
+          onClick={toggleOpen}
+          className="text-white/40 hover:text-white/80 transition-colors text-xs font-mono px-2 py-0.5 rounded border border-white/10 hover:border-white/30"
+          aria-label={open ? 'Collapse server status' : 'Expand server status'}
+        >
+          {open ? '▲ hide' : '▼ show'}
+        </button>
       </div>
 
-      {!stats ? (
-        <p className="text-white/20 text-xs italic text-center py-4">
-          {connected ? 'Waiting for data…' : 'Connecting…'}
-        </p>
-      ) : (
-        <div className="flex flex-col gap-4">
-          <Stat
-            label="CPU"
-            value={`${stats.cpu_pct}%`}
-            sub={`load ${stats.load_1} / ${stats.load_5} / ${stats.load_15}`}
-            pct={stats.cpu_pct}
-          />
-          <Stat
-            label="RAM"
-            value={`${stats.mem_pct}%`}
-            sub={`${stats.mem_used_mb} / ${stats.mem_total_mb} MB`}
-            pct={stats.mem_pct}
-          />
-          <Stat
-            label="Disk"
-            value={`${stats.disk_pct}%`}
-            sub={`${stats.disk_used_gb} / ${stats.disk_total_gb} GB`}
-            pct={stats.disk_pct}
-          />
+      {open && (
+        <div className="p-6">
+          {!stats ? (
+            <p className="text-white/20 text-xs italic text-center py-4">
+              {connected ? 'Waiting for data…' : 'Connecting…'}
+            </p>
+          ) : (
+            <div className="flex flex-col gap-4">
+              <Stat
+                label="CPU"
+                value={`${stats.cpu_pct}%`}
+                sub={`load ${stats.load_1} / ${stats.load_5} / ${stats.load_15}`}
+                pct={stats.cpu_pct}
+              />
+              <Stat
+                label="RAM"
+                value={`${stats.mem_pct}%`}
+                sub={`${stats.mem_used_mb} / ${stats.mem_total_mb} MB`}
+                pct={stats.mem_pct}
+              />
+              <Stat
+                label="Disk"
+                value={`${stats.disk_pct}%`}
+                sub={`${stats.disk_used_gb} / ${stats.disk_total_gb} GB`}
+                pct={stats.disk_pct}
+              />
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
+import { useAccordion } from '../utils/useAccordion.js';
 import { addIQListener } from '../workers/iqWorkerSingleton.js';
-
-const LS_KEY = 'waterfall-open';
 
 // ── Colour LUT (black → blue → cyan → yellow → white) ───────────────────────
 
@@ -75,12 +74,7 @@ export function WaterfallPanel() {
   const [centerFreq, setCenterFreq] = useState<number | null>(null);
   const [sampleRate, setSampleRate] = useState<number | null>(null);
   const wfDataRef = useRef<ImageData | null>(null);
-  const [open, setOpen] = useState<boolean>(() => localStorage.getItem(LS_KEY) === 'true');
-
-  // Persist open/closed state
-  useEffect(() => {
-    localStorage.setItem(LS_KEY, String(open));
-  }, [open]);
+  const [open, toggleOpen] = useAccordion('waterfall-open');
 
   useEffect(() => {
     if (!open) return;
@@ -271,7 +265,7 @@ export function WaterfallPanel() {
         )}
         <button
           type="button"
-          onClick={() => setOpen((v) => !v)}
+          onClick={toggleOpen}
           className="text-white/40 hover:text-white/80 transition-colors text-xs font-mono px-2 py-0.5 rounded border border-white/10 hover:border-white/30"
           aria-label={open ? 'Collapse waterfall' : 'Expand waterfall'}
         >

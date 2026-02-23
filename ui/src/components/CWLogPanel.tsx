@@ -18,6 +18,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CWSocketMessage } from '../types.js';
 import type { CWSession } from '../utils/db.js';
 import { listCWSessions, saveCWSession } from '../utils/db.js';
+import { useAccordion } from '../utils/useAccordion.js';
 
 const SESSION_TIMEOUT_MS = 30_000;
 
@@ -160,7 +161,7 @@ interface ModeState {
   liveStartTs: string;
 }
 
-function useModeState(mode: Mode, wsPath: string, defaultFreq: number): ModeState {
+function useModeState(mode: Mode, wsPath: string, defaultFreq: number, enabled: boolean): ModeState {
   const [sessions, setSessions] = useState<CWSession[]>([]);
   const [selectedId, setSelectedId] = useState<number | 'live'>('live');
   const [connected, setConnected] = useState(false);
@@ -213,6 +214,7 @@ function useModeState(mode: Mode, wsPath: string, defaultFreq: number): ModeStat
   }, [flushSession]);
 
   useEffect(() => {
+    if (!enabled) return;
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     let ws: WebSocket | null = null;
     let closed = false;
@@ -267,7 +269,7 @@ function useModeState(mode: Mode, wsPath: string, defaultFreq: number): ModeStat
       ws?.close();
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [wsPath, resetTimer]);
+  }, [wsPath, resetTimer, enabled]);
 
   return {
     sessions,
@@ -391,10 +393,11 @@ function SessionPanel({ state, hintText }: { state: ModeState; hintText: string 
 // ── Main export ───────────────────────────────────────────────────────────────
 
 export function CWLogPanel() {
+  const [open, toggleOpen] = useAccordion('sessions-open');
   const [mode, setMode] = useState<Mode>('cw');
 
-  const cwState    = useModeState('cw',    '/ws/cw',    14_029_000);
-  const psk31State = useModeState('psk31', '/ws/psk31', 14_070_000);
+  const cwState    = useModeState('cw',    '/ws/cw',    14_029_000, open);
+  const psk31State = useModeState('psk31', '/ws/psk31', 14_070_000, open);
 
   const active = mode === 'cw' ? cwState : psk31State;
 
@@ -412,49 +415,65 @@ export function CWLogPanel() {
           <div className="flex items-center gap-3 mb-0.5">
             <h2 className="text-white text-xl font-semibold tracking-wide">Sessions</h2>
             {/* Mode tabs */}
-            <div className="flex gap-1">
-              <button
-                type="button"
-                onClick={() => setMode('cw')}
-                className={`text-xs font-mono px-2 py-0.5 rounded transition-colors ${
-                  mode === 'cw'
-                    ? 'bg-amber-400/20 text-amber-400 border border-amber-400/40'
-                    : 'text-white/40 border border-white/10 hover:text-white/70 hover:border-white/30'
-                }`}
-              >
-                CW
-              </button>
-              <button
-                type="button"
-                onClick={() => setMode('psk31')}
-                className={`text-xs font-mono px-2 py-0.5 rounded transition-colors ${
-                  mode === 'psk31'
-                    ? 'bg-amber-400/20 text-amber-400 border border-amber-400/40'
-                    : 'text-white/40 border border-white/10 hover:text-white/70 hover:border-white/30'
-                }`}
-              >
-                PSK31
-              </button>
-            </div>
+            {open && (
+              <div className="flex gap-1">
+                <button
+                  type="button"
+                  onClick={() => setMode('cw')}
+                  className={`text-xs font-mono px-2 py-0.5 rounded transition-colors ${
+                    mode === 'cw'
+                      ? 'bg-amber-400/20 text-amber-400 border border-amber-400/40'
+                      : 'text-white/40 border border-white/10 hover:text-white/70 hover:border-white/30'
+                  }`}
+                >
+                  CW
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode('psk31')}
+                  className={`text-xs font-mono px-2 py-0.5 rounded transition-colors ${
+                    mode === 'psk31'
+                      ? 'bg-amber-400/20 text-amber-400 border border-amber-400/40'
+                      : 'text-white/40 border border-white/10 hover:text-white/70 hover:border-white/30'
+                  }`}
+                >
+                  PSK31
+                </button>
+              </div>
+            )}
           </div>
-          <p className="text-white/40 text-xs mt-0.5 font-mono">
-            <span
-              className={`inline-block w-2 h-2 rounded-full mr-1.5 ${active.connected ? 'bg-emerald-400' : 'bg-red-500'}`}
-            />
-            {active.connected
-              ? `${freqLabel} · ${sessionCount} sessions`
-              : `Connecting to ${mode === 'cw' ? 'CW' : 'PSK31'} decoder…`}
-          </p>
+          {open && (
+            <p className="text-white/40 text-xs mt-0.5 font-mono">
+              <span
+                className={`inline-block w-2 h-2 rounded-full mr-1.5 ${active.connected ? 'bg-emerald-400' : 'bg-red-500'}`}
+              />
+              {active.connected
+                ? `${freqLabel} · ${sessionCount} sessions`
+                : `Connecting to ${mode === 'cw' ? 'CW' : 'PSK31'} decoder…`}
+            </p>
+          )}
         </div>
-        <p className="text-white/20 text-[10px] font-mono italic">hover chars for morse</p>
+        <div className="flex items-center gap-3">
+          {open && <p className="text-white/20 text-[10px] font-mono italic">hover chars for morse</p>}
+          <button
+            type="button"
+            onClick={toggleOpen}
+            className="text-white/40 hover:text-white/80 transition-colors text-xs font-mono px-2 py-0.5 rounded border border-white/10 hover:border-white/30"
+            aria-label={open ? 'Collapse sessions' : 'Expand sessions'}
+          >
+            {open ? '▲ hide' : '▼ show'}
+          </button>
+        </div>
       </div>
 
       {/* Master-detail body */}
-      <SessionPanel
-        key={mode}
-        state={active}
-        hintText={mode === 'cw' ? 'CW' : 'PSK31'}
-      />
+      {open && (
+        <SessionPanel
+          key={mode}
+          state={active}
+          hintText={mode === 'cw' ? 'CW' : 'PSK31'}
+        />
+      )}
     </div>
   );
 }
