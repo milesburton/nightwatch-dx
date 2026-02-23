@@ -213,12 +213,12 @@ class TestAudioDecimator:
         out = ad.process_iq(iq)
         assert out.dtype == np.complex64
 
-    def test_output_length_is_100x_less_than_input_iq_pairs(self):
+    def test_output_length_is_50x_less_than_input_iq_pairs(self):
         ad  = bridge.AudioDecimator(55_000)
         iq  = self._raw_to_iq(self._make_raw(65536))
         out = ad.process_iq(iq)
-        # 65536 bytes = 32768 IQ pairs -> ~327-328 output samples (100x decimation)
-        assert 310 <= len(out) <= 340
+        # 65536 bytes = 32768 IQ pairs -> ~655-656 output samples (50x decimation)
+        assert 630 <= len(out) <= 680
 
     def test_state_persists_across_chunks(self):
         ad1 = bridge.AudioDecimator(-146_000)

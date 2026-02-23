@@ -38,25 +38,25 @@ AUDIO_SSTV_PORT  = int(os.environ.get("AUDIO_SSTV_PORT",  "1238"))
 AUDIO_EP_PORT    = int(os.environ.get("AUDIO_EP_PORT",    "1239"))
 AUDIO_PSK31_PORT = int(os.environ.get("AUDIO_PSK31_PORT", "1240"))
 
-RF_CENTER_HZ  = 14_175_000
-CW_FREQ_HZ    = 14_029_000   # offset from RF centre = -146_000
-SSTV_FREQ_HZ  = 14_230_000   # offset from RF centre = +55_000
-EP_FREQ_HZ    = 14_233_000   # offset from RF centre = +58_000
-PSK31_FREQ_HZ = 14_070_000   # offset from RF centre = -105_000
+RF_CENTER_HZ  = 14_131_000
+CW_FREQ_HZ    = 14_029_000   # offset from RF centre = -102_000
+SSTV_FREQ_HZ  = 14_230_000   # offset from RF centre = +99_000
+EP_FREQ_HZ    = 14_233_000   # offset from RF centre = +102_000
+PSK31_FREQ_HZ = 14_070_000   # offset from RF centre = -61_000
 
-SDR_RATE   = 2_400_000
-AUDIO_RATE = 24_000          # 100x decimation (10x x 10x)
+SDR_RATE   = 1_200_000
+AUDIO_RATE = 24_000          # 50x decimation: 10x (stage 1) then 5x (stage 2)
 
 MAGIC       = b"RTL0\x00\x00\x00\x00\x00\x00\x00\x00"  # 12-byte header for IQ clients
 AUDIO_MAGIC = b"AUD0\x00\x00\x00\x00\x00\x00\x00\x00"  # 12-byte header for audio clients
 
 # Two-stage Chebyshev Type-I IIR antialiasing filters — much faster than Kaiser FIR.
-# Each stage removes aliases before 10x decimation.
-# Stage 1 cutoff: 0.1 x SDR_RATE  = 240 kHz -> passband to 120 kHz
-# Stage 2 cutoff: 0.1 x 240 kHz   = 24 kHz  -> passband to 12 kHz
+# At 1.2 Msps: 50x total decimation (10x then 5x) → 24 kHz audio output.
+# Stage 1 cutoff: 0.1 × 1.2 Msps = 120 kHz passband  →  decimate 10× → 120 kHz
+# Stage 2 cutoff: 0.2 × 120 kHz  =  24 kHz passband  →  decimate  5× →  24 kHz
 # 0.05 dB passband ripple, order 8 — gives >60 dB stopband attenuation.
 _SOS1 = cheby1(8, 0.05, 0.1, output='sos')
-_SOS2 = cheby1(8, 0.05, 0.1, output='sos')
+_SOS2 = cheby1(8, 0.05, 0.2, output='sos')
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [bridge] %(message)s")
 log = logging.getLogger(__name__)
@@ -66,13 +66,13 @@ log = logging.getLogger(__name__)
 
 class AudioDecimator:
     """
-    Decimates raw uint8 IQ (2.4 Msps) to complex64 at 24 kHz for one target frequency.
+    Decimates raw uint8 IQ (1.2 Msps) to complex64 at 24 kHz for one target frequency.
 
     Steps:
       1. Accept pre-parsed complex64 IQ (shared across all decimator instances).
       2. Mix by -freq_offset_hz using a running complex phasor (no np.exp).
-      3. Stage-1: Chebyshev IIR LPF + 10x decimate.
-      4. Stage-2: Chebyshev IIR LPF + 10x decimate -> 24 kHz complex64.
+      3. Stage-1: Chebyshev IIR LPF + 10x decimate → 120 kHz.
+      4. Stage-2: Chebyshev IIR LPF +  5x decimate →  24 kHz complex64.
 
     IIR filter state (_zi1, _zi2) is preserved across successive calls so
     the output is phase- and amplitude-continuous across chunk boundaries.
@@ -108,10 +108,10 @@ class AudioDecimator:
         im1, self._zi1_im = sosfilt(_SOS1, mixed.imag, zi=self._zi1_im)
         stage1 = (re1[9::10] + 1j * im1[9::10]).astype(np.complex64)
 
-        # Stage 2: Chebyshev IIR LPF + 10x decimate -> AUDIO_RATE
+        # Stage 2: Chebyshev IIR LPF + 5x decimate -> AUDIO_RATE (24 kHz)
         re2, self._zi2_re = sosfilt(_SOS2, stage1.real, zi=self._zi2_re)
         im2, self._zi2_im = sosfilt(_SOS2, stage1.imag, zi=self._zi2_im)
-        return (re2[9::10] + 1j * im2[9::10]).astype(np.complex64)
+        return (re2[4::5] + 1j * im2[4::5]).astype(np.complex64)
 
 
 # -- Audio mux -----------------------------------------------------------------

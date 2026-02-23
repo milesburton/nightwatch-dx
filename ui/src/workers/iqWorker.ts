@@ -3,8 +3,8 @@ import { initLogShipper } from '../utils/logShipper.js';
 
 initLogShipper('iqWorker');
 
-const SDR_SAMPLE_RATE = 2_400_000;
-const SDR_CENTER_HZ = 139_175_000;
+const SDR_SAMPLE_RATE = 1_200_000;
+const SDR_CENTER_HZ = 139_131_000;
 const LO_OFFSET_HZ = 125_000_000;
 
 const RF_CENTER_HZ = SDR_CENTER_HZ - LO_OFFSET_HZ;
