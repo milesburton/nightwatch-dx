@@ -1,4 +1,4 @@
-.PHONY: test lint typecheck quality ci
+.PHONY: test lint typecheck quality ci deploy deploy-ui
 
 # ── Run all tests ──────────────────────────────────────────────────────────────
 test:
@@ -30,3 +30,10 @@ quality: lint typecheck test
 	@echo "✓ All quality checks passed"
 
 ci: quality
+
+# ── Deploy ─────────────────────────────────────────────────────────────────────
+deploy:
+	./scripts/deploy.sh
+
+deploy-ui:
+	./scripts/deploy.sh ui
