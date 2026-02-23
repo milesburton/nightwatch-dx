@@ -87,6 +87,24 @@ function CWText({ tokens, cursor }: { tokens: CWToken[]; cursor?: boolean }) {
   );
 }
 
+function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        navigator.clipboard.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        });
+      }}
+      className="text-white/30 hover:text-white/70 transition-colors text-[10px] font-mono px-1.5 py-0.5 rounded border border-white/10 hover:border-white/30 shrink-0"
+    >
+      {copied ? '✓ copied' : 'copy'}
+    </button>
+  );
+}
+
 function StatusDot({ live }: { live: boolean }) {
   return (
     <span
@@ -302,11 +320,14 @@ export function CWLogPanel() {
         <div className="flex-1 overflow-y-auto p-6 font-mono">
           {selectedId === 'live' ? (
             <>
-              {liveStartTs && (
-                <p className="text-white/30 text-xs mb-3">
-                  {formatTime(liveStartTs)} · {formatFreq(liveFreq)}
-                </p>
-              )}
+              <div className="flex items-center gap-2 mb-3">
+                {liveStartTs && (
+                  <p className="text-white/30 text-xs flex-1">
+                    {formatTime(liveStartTs)} · {formatFreq(liveFreq)}
+                  </p>
+                )}
+                {liveText && <CopyButton text={liveText} />}
+              </div>
               {liveTokens.length > 0 ? (
                 <CWText tokens={liveTokens} cursor />
               ) : (
@@ -318,13 +339,16 @@ export function CWLogPanel() {
 
           ) : selectedSession ? (
             <>
-              <p className="text-white/30 text-xs mb-3">
-                {formatTime(selectedSession.startTs)}
-                {' – '}
-                {formatTime(selectedSession.endTs)}
-                {' · '}
-                {formatFreq(selectedSession.freqHz)}
-              </p>
+              <div className="flex items-center gap-2 mb-3">
+                <p className="text-white/30 text-xs flex-1">
+                  {formatTime(selectedSession.startTs)}
+                  {' – '}
+                  {formatTime(selectedSession.endTs)}
+                  {' · '}
+                  {formatFreq(selectedSession.freqHz)}
+                </p>
+                <CopyButton text={selectedSession.text} />
+              </div>
               <CWText tokens={tokenise(selectedSession.text)} />
             </>
           ) : (
