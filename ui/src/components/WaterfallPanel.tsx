@@ -96,24 +96,31 @@ export function WaterfallPanel() {
       if (!specCanvas || !wfCanvas) return;
 
       // If the container hasn't been measured yet, size the canvases now.
+      // Scale by devicePixelRatio so the canvas has physical pixels 1:1 on HiDPI displays.
+      const dpr = window.devicePixelRatio || 1;
       let W = wfCanvas.width;
       if (W === 0) {
         const containerW = Math.floor(wfCanvas.getBoundingClientRect().width);
         if (containerW === 0) return;
-        W = containerW;
-        specCanvas.width = containerW;
-        specCanvas.height = SPECTRUM_HEIGHT;
-        wfCanvas.width = containerW;
-        wfCanvas.height = WATERFALL_ROWS;
+        W = Math.round(containerW * dpr);
+        specCanvas.width = W;
+        specCanvas.height = Math.round(SPECTRUM_HEIGHT * dpr);
+        wfCanvas.width = W;
+        wfCanvas.height = Math.round(WATERFALL_ROWS * dpr);
         wfDataRef.current = null;
       }
 
-      // ── Spectrum (instantaneous) ──────────────────────────────────────────
-      if (specCanvas.height !== SPECTRUM_HEIGHT) specCanvas.height = SPECTRUM_HEIGHT;
+      // Physical pixel dimensions of the waterfall canvas
+      const H_spec = specCanvas.height; // physical px
+      const H_wf = wfCanvas.height;     // physical px
 
+      // ── Spectrum (instantaneous) ──────────────────────────────────────────
       const specCtx = specCanvas.getContext('2d');
       if (specCtx) {
-        specCtx.clearRect(0, 0, W, SPECTRUM_HEIGHT);
+        specCtx.save();
+        // Draw in CSS (logical) coordinates — scale to physical pixels via DPR
+        specCtx.scale(dpr, dpr);
+        specCtx.clearRect(0, 0, W / dpr, SPECTRUM_HEIGHT);
 
         specCtx.strokeStyle = 'rgba(255,255,255,0.06)';
         specCtx.lineWidth = 1;
@@ -122,7 +129,7 @@ export function WaterfallPanel() {
           const y = Math.round(normY * SPECTRUM_HEIGHT);
           specCtx.beginPath();
           specCtx.moveTo(0, SPECTRUM_HEIGHT - y);
-          specCtx.lineTo(W, SPECTRUM_HEIGHT - y);
+          specCtx.lineTo(W / dpr, SPECTRUM_HEIGHT - y);
           specCtx.stroke();
         }
 
@@ -130,8 +137,9 @@ export function WaterfallPanel() {
         specCtx.strokeStyle = '#22d3ee';
         specCtx.lineWidth = 1.5;
         const N = bins.length;
+        const cssW = W / dpr;
         for (let i = 0; i < N; i++) {
-          const x = (i / N) * W;
+          const x = (i / N) * cssW;
           const normY = (Math.max(DB_MIN, Math.min(DB_MAX, bins[i])) - DB_MIN) / DB_RANGE;
           const y = SPECTRUM_HEIGHT - normY * SPECTRUM_HEIGHT;
           if (i === 0) specCtx.moveTo(x, y);
@@ -143,8 +151,8 @@ export function WaterfallPanel() {
           specCtx.font = '9px monospace';
           specCtx.textAlign = 'center';
           for (const m of BAND_MARKERS) {
-            const x = freqToX(m.freqHz, cf, sr, W);
-            if (x < 0 || x > W) continue;
+            const x = freqToX(m.freqHz, cf, sr, cssW);
+            if (x < 0 || x > cssW) continue;
             specCtx.strokeStyle = 'rgba(255,255,255,0.25)';
             specCtx.lineWidth = 1;
             specCtx.setLineDash([3, 4]);
@@ -160,20 +168,19 @@ export function WaterfallPanel() {
             });
           }
         }
+        specCtx.restore();
       }
 
       // ── Waterfall (scrolling history) ────────────────────────────────────
-      if (wfCanvas.height !== WATERFALL_ROWS) wfCanvas.height = WATERFALL_ROWS;
-
       const wfCtx = wfCanvas.getContext('2d');
       if (!wfCtx) return;
 
       if (
         !wfDataRef.current ||
         wfDataRef.current.width !== W ||
-        wfDataRef.current.height !== WATERFALL_ROWS
+        wfDataRef.current.height !== H_wf
       ) {
-        wfDataRef.current = wfCtx.createImageData(W, WATERFALL_ROWS);
+        wfDataRef.current = wfCtx.createImageData(W, H_wf);
         // Pre-fill alpha to 255 so all rows are opaque black until data arrives.
         // createImageData initialises to all-zero which makes pixels transparent,
         // causing the canvas to show the page background instead of black.
@@ -186,7 +193,7 @@ export function WaterfallPanel() {
       // Scroll waterfall down one row (copy rows 0‥ROWS-2 → rows 1‥ROWS-1).
       // Must iterate in reverse to avoid overwriting source before it's copied.
       const rowBytes = W * 4;
-      for (let row = WATERFALL_ROWS - 1; row > 0; row--) {
+      for (let row = H_wf - 1; row > 0; row--) {
         wfData.data.copyWithin(row * rowBytes, (row - 1) * rowBytes, row * rowBytes);
       }
 
@@ -203,37 +210,46 @@ export function WaterfallPanel() {
       wfCtx.putImageData(wfData, 0, 0);
 
       if (cf && sr) {
+        const cssWf = W / dpr;
+        wfCtx.save();
+        wfCtx.scale(dpr, dpr);
         wfCtx.strokeStyle = 'rgba(255,255,255,0.2)';
         wfCtx.lineWidth = 1;
         wfCtx.setLineDash([4, 6]);
         for (const m of BAND_MARKERS) {
-          const x = freqToX(m.freqHz, cf, sr, W);
-          if (x < 0 || x > W) continue;
+          const x = freqToX(m.freqHz, cf, sr, cssWf);
+          if (x < 0 || x > cssWf) continue;
           wfCtx.beginPath();
           wfCtx.moveTo(x, 0);
           wfCtx.lineTo(x, WATERFALL_ROWS);
           wfCtx.stroke();
         }
         wfCtx.setLineDash([]);
+        wfCtx.restore();
       }
+
+      // suppress unused-var warnings for physical-px vars used above
+      void H_spec;
     });
     return unsub;
   }, [open]);
 
-  // Resize canvases on mount
+  // Resize canvases on mount (and on window resize), accounting for devicePixelRatio.
   useEffect(() => {
     const resize = () => {
       const container = specCanvasRef.current?.parentElement;
       if (!container) return;
-      const W = container.clientWidth || Math.floor(container.getBoundingClientRect().width);
-      if (W === 0) return;
+      const cssW = container.clientWidth || Math.floor(container.getBoundingClientRect().width);
+      if (cssW === 0) return;
+      const dpr = window.devicePixelRatio || 1;
+      const W = Math.round(cssW * dpr);
       if (specCanvasRef.current) {
         specCanvasRef.current.width = W;
-        specCanvasRef.current.height = SPECTRUM_HEIGHT;
+        specCanvasRef.current.height = Math.round(SPECTRUM_HEIGHT * dpr);
       }
       if (wfCanvasRef.current) {
         wfCanvasRef.current.width = W;
-        wfCanvasRef.current.height = WATERFALL_ROWS;
+        wfCanvasRef.current.height = Math.round(WATERFALL_ROWS * dpr);
       }
       wfDataRef.current = null;
     };
@@ -293,11 +309,7 @@ export function WaterfallPanel() {
           <canvas
             ref={wfCanvasRef}
             className="w-full block rounded-b-lg"
-            style={{
-              height: `${WATERFALL_ROWS}px`,
-              imageRendering: 'pixelated',
-              minHeight: `${WATERFALL_ROWS}px`,
-            }}
+            style={{ height: `${WATERFALL_ROWS}px` }}
           />
 
           {!connected && (

@@ -11,10 +11,10 @@ const RF_CENTER_HZ = SDR_CENTER_HZ - LO_OFFSET_HZ;
 
 // ── Waterfall FFT ─────────────────────────────────────────────────────────────
 
-const FFT_SIZE = 1024;
+const FFT_SIZE = 4096;
 const FFT_AVERAGES = 3;
 // Stride: compute a new FFT window every N new IQ samples.
-// 1024/4 = 256 → ~4× overlap → ~144 FFTs/sec at 2.4 Msps / 65536 bytes/msg
+// 4096/4 = 1024 → ~4× overlap
 const FFT_STRIDE = FFT_SIZE >> 2;
 
 const hannWindow = new Float32Array(FFT_SIZE);
