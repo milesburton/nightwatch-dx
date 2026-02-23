@@ -23,35 +23,17 @@ echo "=== dx-watch deploy: mode=$MODE target=$SERVER ==="
 # ── Fast UI deploy ────────────────────────────────────────────────────────────
 if [[ "$MODE" == "ui" ]]; then
   echo
-  echo "▶ Building UI locally..."
-  cd "$(dirname "$0")/../ui"
-  npm run build
-  cd ..
-
-  echo "▶ Packaging dist/..."
-  tar czf /tmp/dx-watch-ui.tar.gz -C ui/dist .
-
-  echo "▶ Copying to server..."
-  scp /tmp/dx-watch-ui.tar.gz "$SERVER:/tmp/dx-watch-ui.tar.gz"
-
-  echo "▶ Deploying into container $UI_CONTAINER..."
+  echo "▶ Deploying UI (git pull + docker compose build ui + up)..."
   ssh "$SERVER" bash <<EOF
 set -e
-docker cp /tmp/dx-watch-ui.tar.gz ${UI_CONTAINER}:/tmp/
-docker exec ${UI_CONTAINER} sh -c '
-  rm -rf ${NGINX_ROOT}/*
-  tar xzf /tmp/dx-watch-ui.tar.gz -C ${NGINX_ROOT}
-  rm /tmp/dx-watch-ui.tar.gz
-  echo "  files in ${NGINX_ROOT}:"
-  ls ${NGINX_ROOT}
-'
-rm -f /tmp/dx-watch-ui.tar.gz
+cd ${REPO}
+git pull --ff-only
+docker compose build ui
+docker compose up -d ui
+docker compose logs --tail=10 ui
 EOF
-
-  rm -f /tmp/dx-watch-ui.tar.gz
-
   echo
-  echo "✓ UI deployed. Nginx serves the new build immediately (no restart needed)."
+  echo "✓ UI deployed."
   echo "  http://${SERVER##*@}:8080"
   exit 0
 fi
