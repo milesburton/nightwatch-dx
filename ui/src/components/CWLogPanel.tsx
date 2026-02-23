@@ -1,16 +1,17 @@
 /**
- * CWLogPanel — persistent CW session log with Fallout-style master-detail layout.
+ * CWLogPanel — persistent session log for CW and PSK31 modes.
  *
- * Left (35%): scrollable session list (newest first), amber dot for live session.
- * Right (65%): selected session text or live decode stream.
+ * Header tabs switch between CW and PSK31.  Each mode has its own:
+ *   - WebSocket connection (/ws/cw or /ws/psk31)
+ *   - Live session state and 30-second inactivity timer
+ *   - IndexedDB persistence (sdr-monitor / cw-sessions, mode-tagged)
  *
- * Sessions are persisted in IndexedDB (sdr-monitor / cw-sessions).
- * A 30-second inactivity timer marks the end of each session.
+ * Layout: Fallout-style master-detail.
+ *   Left (35%): scrollable session list (newest first), amber dot for live.
+ *   Right (65%): selected session text or live decode stream.
  *
- * Data source: WebSocket to /ws/cw (cw-decoder Python service).
- *
- * Each decoded character is rendered as a hoverable token — plain text visible
- * by default, Morse dots/dashes revealed on hover.
+ * Each decoded character is a hoverable token — plain text visible by default,
+ * Morse dots/dashes (CW mode) or varicode bits revealed on hover.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -19,6 +20,8 @@ import type { CWSession } from '../utils/db.js';
 import { listCWSessions, saveCWSession } from '../utils/db.js';
 
 const SESSION_TIMEOUT_MS = 30_000;
+
+type Mode = 'cw' | 'psk31';
 
 const CHAR_TO_MORSE: Record<string, string> = {
   A: '.-',    B: '-...',  C: '-.-.',  D: '-..',   E: '.',
@@ -127,7 +130,7 @@ function CopyButton({ text }: { text: string }) {
 function StatusDot({ live }: { live: boolean }) {
   return (
     <span
-      className={`inline-block w-2 h-2 rounded-full flex-shrink-0 ${live ? 'bg-amber-400 animate-pulse' : 'bg-white/20'}`}
+      className={`inline-block w-2 h-2 rounded-full shrink-0 ${live ? 'bg-amber-400 animate-pulse' : 'bg-white/20'}`}
     />
   );
 }
@@ -144,31 +147,41 @@ function formatFreq(hz: number): string {
   return `${(hz / 1e6).toFixed(3)} MHz`;
 }
 
-export function CWLogPanel() {
-  // ── Persisted sessions ──────────────────────────────────────────────────────
+// ── Per-mode session hook ─────────────────────────────────────────────────────
+
+interface ModeState {
+  sessions: CWSession[];
+  selectedId: number | 'live';
+  setSelectedId: (id: number | 'live') => void;
+  connected: boolean;
+  liveTokens: CWToken[];
+  liveText: string;
+  liveFreq: number;
+  liveStartTs: string;
+}
+
+function useModeState(mode: Mode, wsPath: string, defaultFreq: number): ModeState {
   const [sessions, setSessions] = useState<CWSession[]>([]);
   const [selectedId, setSelectedId] = useState<number | 'live'>('live');
-
-  // ── Live session state ──────────────────────────────────────────────────────
   const [connected, setConnected] = useState(false);
   const [liveTokens, setLiveTokens] = useState<CWToken[]>([]);
   const [liveText, setLiveText] = useState('');
-  const [liveFreq, setLiveFreq] = useState<number>(14_029_000);
+  const [liveFreq, setLiveFreq] = useState<number>(defaultFreq);
   const [liveStartTs, setLiveStartTs] = useState<string>('');
 
-  const liveTextRef = useRef('');
-  const liveFreqRef = useRef(14_029_000);
+  const liveTextRef  = useRef('');
+  const liveFreqRef  = useRef(defaultFreq);
   const liveStartRef = useRef('');
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const timerRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // ── Load persisted sessions on mount ───────────────────────────────────────
+  // Load persisted sessions on mount (filter by mode tag)
   useEffect(() => {
     listCWSessions().then((rows) => {
-      setSessions(rows.sort((a, b) => b.startTs.localeCompare(a.startTs)));
+      const filtered = rows.filter((s) => (s.mode ?? 'cw') === mode);
+      setSessions(filtered.sort((a, b) => b.startTs.localeCompare(a.startTs)));
     });
-  }, []);
+  }, [mode]);
 
-  // ── Session flush ───────────────────────────────────────────────────────────
   const flushSession = useCallback(() => {
     const text = liveTextRef.current.trim();
     if (!text) return;
@@ -177,6 +190,7 @@ export function CWLogPanel() {
       endTs: new Date().toISOString(),
       text,
       freqHz: liveFreqRef.current,
+      mode,
     };
     saveCWSession(session).then(() => {
       setSessions((prev) => {
@@ -189,9 +203,8 @@ export function CWLogPanel() {
     setLiveText('');
     setLiveTokens([]);
     setLiveStartTs('');
-  }, []);
+  }, [mode]);
 
-  // ── Reset inactivity timer ──────────────────────────────────────────────────
   const resetTimer = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
@@ -199,7 +212,6 @@ export function CWLogPanel() {
     }, SESSION_TIMEOUT_MS);
   }, [flushSession]);
 
-  // ── WebSocket to /ws/cw ─────────────────────────────────────────────────────
   useEffect(() => {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     let ws: WebSocket | null = null;
@@ -207,7 +219,7 @@ export function CWLogPanel() {
 
     function connect() {
       if (closed) return;
-      ws = new WebSocket(`${proto}//${location.host}/ws/cw`);
+      ws = new WebSocket(`${proto}//${location.host}${wsPath}`);
       ws.onopen = () => {};
       ws.onclose = () => {
         setConnected(false);
@@ -255,126 +267,194 @@ export function CWLogPanel() {
       ws?.close();
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [resetTimer]);
+  }, [wsPath, resetTimer]);
 
+  return {
+    sessions,
+    selectedId,
+    setSelectedId,
+    connected,
+    liveTokens,
+    liveText,
+    liveFreq,
+    liveStartTs,
+  };
+}
 
-  // ── Render helpers ──────────────────────────────────────────────────────────
+// ── Session panel (master-detail list + detail pane) ─────────────────────────
+
+function SessionPanel({ state, hintText }: { state: ModeState; hintText: string }) {
+  const { sessions, selectedId, setSelectedId, connected, liveTokens,
+          liveText, liveFreq, liveStartTs } = state;
+
   const selectedSession =
     selectedId !== 'live' ? (sessions.find((s) => s.id === selectedId) ?? null) : null;
 
   const isLive = liveText.length > 0;
 
   return (
+    <div className="flex" style={{ minHeight: '400px', maxHeight: '60vh' }}>
+      {/* Left: session list (35%) */}
+      <div className="w-[35%] border-r border-white/10 overflow-y-auto shrink-0">
+        {/* Live session entry */}
+        <button
+          type="button"
+          onClick={() => setSelectedId('live')}
+          className={`w-full text-left px-4 py-3 border-b border-white/6 transition-colors flex items-start gap-2
+            ${selectedId === 'live' ? 'bg-white/8' : 'hover:bg-white/4'}`}
+        >
+          <StatusDot live={isLive} />
+          <div className="min-w-0">
+            <p className="text-xs text-amber-400 font-semibold">Live</p>
+            {liveStartTs && (
+              <p className="text-[10px] text-white/30 font-mono">{formatTime(liveStartTs)}</p>
+            )}
+            {liveText && (
+              <p className="text-[10px] text-white/50 font-mono truncate mt-0.5">
+                {liveText.slice(0, 30)}
+              </p>
+            )}
+            {!liveText && <p className="text-[10px] text-white/20 italic">Waiting for signal…</p>}
+          </div>
+        </button>
+
+        {/* Past sessions */}
+        {sessions.map((s) => (
+          <button
+            key={s.id}
+            type="button"
+            onClick={() => {
+              if (s.id !== undefined) setSelectedId(s.id);
+            }}
+            className={`w-full text-left px-4 py-3 border-b border-white/6 transition-colors flex items-start gap-2
+              ${selectedId === s.id ? 'bg-white/8' : 'hover:bg-white/4'}`}
+          >
+            <StatusDot live={false} />
+            <div className="min-w-0">
+              <p className="text-xs text-white/70 font-mono">{formatTime(s.startTs)}</p>
+              <p className="text-[10px] text-white/30 font-mono">{formatFreq(s.freqHz)}</p>
+              <p className="text-[10px] text-white/50 font-mono truncate mt-0.5">
+                {s.text.slice(0, 30)}
+              </p>
+            </div>
+          </button>
+        ))}
+
+        {sessions.length === 0 && !isLive && (
+          <p className="text-white/20 text-xs italic p-4">No sessions yet.</p>
+        )}
+      </div>
+
+      {/* Right: detail pane (65%) */}
+      <div className="flex-1 overflow-y-auto p-6 font-mono">
+        {selectedId === 'live' ? (
+          <>
+            <div className="flex items-center gap-2 mb-3">
+              {liveStartTs && (
+                <p className="text-white/30 text-xs flex-1">
+                  {formatTime(liveStartTs)} · {formatFreq(liveFreq)}
+                </p>
+              )}
+              {liveText && <CopyButton text={liveText} />}
+            </div>
+            {liveTokens.length > 0 ? (
+              <CWText tokens={liveTokens} cursor />
+            ) : (
+              <p className="text-white/20 text-xs italic">
+                {connected ? `Waiting for ${hintText} signal…` : 'Connecting…'}
+              </p>
+            )}
+          </>
+
+        ) : selectedSession ? (
+          <>
+            <div className="flex items-center gap-2 mb-3">
+              <p className="text-white/30 text-xs flex-1">
+                {formatTime(selectedSession.startTs)}
+                {' – '}
+                {formatTime(selectedSession.endTs)}
+                {' · '}
+                {formatFreq(selectedSession.freqHz)}
+              </p>
+              <CopyButton text={selectedSession.text} />
+            </div>
+            <CWText tokens={tokenise(selectedSession.text)} />
+          </>
+        ) : (
+          <p className="text-white/20 text-xs italic">Select a session.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── Main export ───────────────────────────────────────────────────────────────
+
+export function CWLogPanel() {
+  const [mode, setMode] = useState<Mode>('cw');
+
+  const cwState    = useModeState('cw',    '/ws/cw',    14_029_000);
+  const psk31State = useModeState('psk31', '/ws/psk31', 14_070_000);
+
+  const active = mode === 'cw' ? cwState : psk31State;
+
+  const freqLabel = mode === 'cw'
+    ? formatFreq(active.liveFreq)
+    : `14.070 ±2kHz`;
+
+  const sessionCount = active.sessions.length;
+
+  return (
     <div className="glass rounded-2xl overflow-hidden">
-      {/* ── Header ── */}
+      {/* Header */}
       <div className="flex items-center justify-between px-6 py-4 border-b border-white/10">
         <div>
-          <h2 className="text-white text-xl font-semibold tracking-wide">CW — Sessions</h2>
+          <div className="flex items-center gap-3 mb-0.5">
+            <h2 className="text-white text-xl font-semibold tracking-wide">Sessions</h2>
+            {/* Mode tabs */}
+            <div className="flex gap-1">
+              <button
+                type="button"
+                onClick={() => setMode('cw')}
+                className={`text-xs font-mono px-2 py-0.5 rounded transition-colors ${
+                  mode === 'cw'
+                    ? 'bg-amber-400/20 text-amber-400 border border-amber-400/40'
+                    : 'text-white/40 border border-white/10 hover:text-white/70 hover:border-white/30'
+                }`}
+              >
+                CW
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode('psk31')}
+                className={`text-xs font-mono px-2 py-0.5 rounded transition-colors ${
+                  mode === 'psk31'
+                    ? 'bg-amber-400/20 text-amber-400 border border-amber-400/40'
+                    : 'text-white/40 border border-white/10 hover:text-white/70 hover:border-white/30'
+                }`}
+              >
+                PSK31
+              </button>
+            </div>
+          </div>
           <p className="text-white/40 text-xs mt-0.5 font-mono">
             <span
-              className={`inline-block w-2 h-2 rounded-full mr-1.5 ${connected ? 'bg-emerald-400' : 'bg-red-500'}`}
+              className={`inline-block w-2 h-2 rounded-full mr-1.5 ${active.connected ? 'bg-emerald-400' : 'bg-red-500'}`}
             />
-            {connected
-              ? `${formatFreq(liveFreq)} · ${sessions.length} sessions`
-              : 'Connecting to CW decoder…'}
+            {active.connected
+              ? `${freqLabel} · ${sessionCount} sessions`
+              : `Connecting to ${mode === 'cw' ? 'CW' : 'PSK31'} decoder…`}
           </p>
         </div>
         <p className="text-white/20 text-[10px] font-mono italic">hover chars for morse</p>
       </div>
 
-      {/* ── Master-detail body ── */}
-      <div className="flex" style={{ minHeight: '400px', maxHeight: '60vh' }}>
-        {/* ── Left: session list (35%) ── */}
-        <div className="w-[35%] border-r border-white/10 overflow-y-auto flex-shrink-0">
-          {/* Live session entry */}
-          <button
-            type="button"
-            onClick={() => setSelectedId('live')}
-            className={`w-full text-left px-4 py-3 border-b border-white/6 transition-colors flex items-start gap-2
-              ${selectedId === 'live' ? 'bg-white/8' : 'hover:bg-white/4'}`}
-          >
-            <StatusDot live={isLive} />
-            <div className="min-w-0">
-              <p className="text-xs text-amber-400 font-semibold">Live</p>
-              {liveStartTs && (
-                <p className="text-[10px] text-white/30 font-mono">{formatTime(liveStartTs)}</p>
-              )}
-              {liveText && (
-                <p className="text-[10px] text-white/50 font-mono truncate mt-0.5">
-                  {liveText.slice(0, 30)}
-                </p>
-              )}
-              {!liveText && <p className="text-[10px] text-white/20 italic">Waiting for signal…</p>}
-            </div>
-          </button>
-
-          {/* Past sessions */}
-          {sessions.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              onClick={() => {
-                if (s.id !== undefined) setSelectedId(s.id);
-              }}
-              className={`w-full text-left px-4 py-3 border-b border-white/6 transition-colors flex items-start gap-2
-                ${selectedId === s.id ? 'bg-white/8' : 'hover:bg-white/4'}`}
-            >
-              <StatusDot live={false} />
-              <div className="min-w-0">
-                <p className="text-xs text-white/70 font-mono">{formatTime(s.startTs)}</p>
-                <p className="text-[10px] text-white/30 font-mono">{formatFreq(s.freqHz)}</p>
-                <p className="text-[10px] text-white/50 font-mono truncate mt-0.5">
-                  {s.text.slice(0, 30)}
-                </p>
-              </div>
-            </button>
-          ))}
-
-          {sessions.length === 0 && !isLive && (
-            <p className="text-white/20 text-xs italic p-4">No sessions yet.</p>
-          )}
-        </div>
-
-        {/* ── Right: content (65%) ── */}
-        <div className="flex-1 overflow-y-auto p-6 font-mono">
-          {selectedId === 'live' ? (
-            <>
-              <div className="flex items-center gap-2 mb-3">
-                {liveStartTs && (
-                  <p className="text-white/30 text-xs flex-1">
-                    {formatTime(liveStartTs)} · {formatFreq(liveFreq)}
-                  </p>
-                )}
-                {liveText && <CopyButton text={liveText} />}
-              </div>
-              {liveTokens.length > 0 ? (
-                <CWText tokens={liveTokens} cursor />
-              ) : (
-                <p className="text-white/20 text-xs italic">
-                  {connected ? 'Waiting for CW signal…' : 'Connecting…'}
-                </p>
-              )}
-            </>
-
-          ) : selectedSession ? (
-            <>
-              <div className="flex items-center gap-2 mb-3">
-                <p className="text-white/30 text-xs flex-1">
-                  {formatTime(selectedSession.startTs)}
-                  {' – '}
-                  {formatTime(selectedSession.endTs)}
-                  {' · '}
-                  {formatFreq(selectedSession.freqHz)}
-                </p>
-                <CopyButton text={selectedSession.text} />
-              </div>
-              <CWText tokens={tokenise(selectedSession.text)} />
-            </>
-          ) : (
-            <p className="text-white/20 text-xs italic">Select a session.</p>
-          )}
-        </div>
-      </div>
+      {/* Master-detail body */}
+      <SessionPanel
+        key={mode}
+        state={active}
+        hintText={mode === 'cw' ? 'CW' : 'PSK31'}
+      />
     </div>
   );
 }

@@ -13,8 +13,8 @@ RUN pip3 install --no-cache-dir --break-system-packages -r requirements.txt
 COPY services/rtl-bridge/rtl_bridge.py .
 
 # rtl_tcp runs on 1234 (internal), TCP mux on 1235, WebSocket IQ on 1236
-# Audio mux ports: 1237 (CW), 1238 (SSTV), 1239 (EasyPal)
-EXPOSE 1235 1236 1237 1238 1239
+# Audio mux ports: 1237 (CW), 1238 (SSTV), 1239 (EasyPal), 1240 (PSK31)
+EXPOSE 1235 1236 1237 1238 1239 1240
 
 # Start rtl_tcp then the Python multiplexer
 # -f 139175000 = 14.175 MHz centre of 20m band + 125 MHz LO

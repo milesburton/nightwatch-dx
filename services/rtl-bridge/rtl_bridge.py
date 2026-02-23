@@ -33,14 +33,16 @@ MUX_PORT     = int(os.environ.get("MUX_PORT",     "1235"))   # downstream (TCP d
 WS_PORT      = int(os.environ.get("WS_PORT",      "1236"))   # browser WebSocket IQ stream
 RTL_TCP_HOST = os.environ.get("RTL_TCP_HOST", "127.0.0.1")
 
-AUDIO_CW_PORT   = int(os.environ.get("AUDIO_CW_PORT",   "1237"))
-AUDIO_SSTV_PORT = int(os.environ.get("AUDIO_SSTV_PORT", "1238"))
-AUDIO_EP_PORT   = int(os.environ.get("AUDIO_EP_PORT",   "1239"))
+AUDIO_CW_PORT    = int(os.environ.get("AUDIO_CW_PORT",    "1237"))
+AUDIO_SSTV_PORT  = int(os.environ.get("AUDIO_SSTV_PORT",  "1238"))
+AUDIO_EP_PORT    = int(os.environ.get("AUDIO_EP_PORT",    "1239"))
+AUDIO_PSK31_PORT = int(os.environ.get("AUDIO_PSK31_PORT", "1240"))
 
-RF_CENTER_HZ = 14_175_000
-CW_FREQ_HZ   = 14_029_000   # offset from RF centre = -146_000
-SSTV_FREQ_HZ = 14_230_000   # offset from RF centre = +55_000
-EP_FREQ_HZ   = 14_233_000   # offset from RF centre = +58_000
+RF_CENTER_HZ  = 14_175_000
+CW_FREQ_HZ    = 14_029_000   # offset from RF centre = -146_000
+SSTV_FREQ_HZ  = 14_230_000   # offset from RF centre = +55_000
+EP_FREQ_HZ    = 14_233_000   # offset from RF centre = +58_000
+PSK31_FREQ_HZ = 14_070_000   # offset from RF centre = -105_000
 
 SDR_RATE   = 2_400_000
 AUDIO_RATE = 24_000          # 100x decimation (10x x 10x)
@@ -365,10 +367,11 @@ class Multiplexer:
         ws_thread.start()
 
         # Create and start audio mux instances for each decoder frequency
-        cw_mux   = AudioMux(AUDIO_CW_PORT,   CW_FREQ_HZ   - RF_CENTER_HZ)
-        sstv_mux = AudioMux(AUDIO_SSTV_PORT, SSTV_FREQ_HZ - RF_CENTER_HZ)
-        ep_mux   = AudioMux(AUDIO_EP_PORT,   EP_FREQ_HZ   - RF_CENTER_HZ)
-        self._audio_muxes = [cw_mux, sstv_mux, ep_mux]
+        cw_mux    = AudioMux(AUDIO_CW_PORT,    CW_FREQ_HZ    - RF_CENTER_HZ)
+        sstv_mux  = AudioMux(AUDIO_SSTV_PORT,  SSTV_FREQ_HZ  - RF_CENTER_HZ)
+        ep_mux    = AudioMux(AUDIO_EP_PORT,    EP_FREQ_HZ    - RF_CENTER_HZ)
+        psk31_mux = AudioMux(AUDIO_PSK31_PORT, PSK31_FREQ_HZ - RF_CENTER_HZ)
+        self._audio_muxes = [cw_mux, sstv_mux, ep_mux, psk31_mux]
         for mux in self._audio_muxes:
             t = threading.Thread(target=mux.serve, daemon=True,
                                  name=f"audio-mux-{mux._port}")

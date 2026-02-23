@@ -74,10 +74,12 @@ function useSignalStatus() {
   const [cwActive, setCwActive] = useState(false);
   const [sstActive, setSstActive] = useState(false);
   const [easypalActive, setEasypalActive] = useState(false);
+  const [psk31Active, setPsk31Active] = useState(false);
 
   const cwTimer      = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sstTimer     = useRef<ReturnType<typeof setTimeout> | null>(null);
   const easypalTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const psk31Timer   = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hwTimer      = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // IQ / spectrum — track connection AND data flow
@@ -170,7 +172,31 @@ function useSignalStatus() {
     };
   }, []);
 
-  return { iqConnected, hwDown, cwActive, sstActive, easypalActive };
+  // PSK31 active — listen for char/word_space events
+  useEffect(() => {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const ws = new WebSocket(`${proto}://${location.host}/ws/psk31`);
+
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data as string) as CWSocketMessage;
+        if (msg.type === 'char' || msg.type === 'word_space') {
+          setPsk31Active(true);
+          if (psk31Timer.current) clearTimeout(psk31Timer.current);
+          psk31Timer.current = setTimeout(() => setPsk31Active(false), ACTIVE_TTL_MS);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+
+    return () => {
+      ws.close();
+      if (psk31Timer.current) clearTimeout(psk31Timer.current);
+    };
+  }, []);
+
+  return { iqConnected, hwDown, cwActive, sstActive, easypalActive, psk31Active };
 }
 
 function Subtitle({
@@ -179,12 +205,14 @@ function Subtitle({
   cwActive,
   sstActive,
   easypalActive,
+  psk31Active,
 }: {
   iqConnected: boolean;
   hwDown: boolean;
   cwActive: boolean;
   sstActive: boolean;
   easypalActive: boolean;
+  psk31Active: boolean;
 }) {
   const parts: string[] = [];
 
@@ -195,11 +223,12 @@ function Subtitle({
   } else {
     parts.push('Scanning 20m');
     if (cwActive) parts.push('CW Active');
+    if (psk31Active) parts.push('PSK31 Active');
     if (sstActive) parts.push('SSTV Active');
     if (easypalActive) parts.push('EasyPal Active');
   }
 
-  const activeLabels = new Set(['CW Active', 'SSTV Active', 'EasyPal Active']);
+  const activeLabels = new Set(['CW Active', 'PSK31 Active', 'SSTV Active', 'EasyPal Active']);
 
   return (
     <p className="text-sm text-white/50 tracking-widest uppercase font-medium">
@@ -225,7 +254,7 @@ function Subtitle({
 
 // ── App ────────────────────────────────────────────────────────────────────────
 
-function useDocumentTitle(hwDown: boolean, iqConnected: boolean, cwActive: boolean, sstActive: boolean, easypalActive: boolean) {
+function useDocumentTitle(hwDown: boolean, iqConnected: boolean, cwActive: boolean, sstActive: boolean, easypalActive: boolean, psk31Active: boolean) {
   useEffect(() => {
     if (hwDown) {
       document.title = '⚠ Offline — dx-watch';
@@ -234,6 +263,7 @@ function useDocumentTitle(hwDown: boolean, iqConnected: boolean, cwActive: boole
     } else {
       const active: string[] = [];
       if (cwActive) active.push('CW');
+      if (psk31Active) active.push('PSK31');
       if (sstActive) active.push('SSTV');
       if (easypalActive) active.push('EasyPal');
       if (active.length > 0) {
@@ -242,14 +272,14 @@ function useDocumentTitle(hwDown: boolean, iqConnected: boolean, cwActive: boole
         document.title = 'Scanning 20m — dx-watch';
       }
     }
-  }, [hwDown, iqConnected, cwActive, sstActive, easypalActive]);
+  }, [hwDown, iqConnected, cwActive, sstActive, easypalActive, psk31Active]);
 }
 
 export default function App() {
   useStarfield();
   useVersionPoller();
-  const { iqConnected, hwDown, cwActive, sstActive, easypalActive } = useSignalStatus();
-  useDocumentTitle(hwDown, iqConnected, cwActive, sstActive, easypalActive);
+  const { iqConnected, hwDown, cwActive, sstActive, easypalActive, psk31Active } = useSignalStatus();
+  useDocumentTitle(hwDown, iqConnected, cwActive, sstActive, easypalActive, psk31Active);
 
   return (
     <>
@@ -285,6 +315,7 @@ export default function App() {
             cwActive={cwActive}
             sstActive={sstActive}
             easypalActive={easypalActive}
+            psk31Active={psk31Active}
           />
         </header>
 

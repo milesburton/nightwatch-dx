@@ -17,6 +17,7 @@ export interface CWSession {
   endTs: string; // ISO timestamp of last character
   text: string; // decoded text
   freqHz: number; // RF frequency in Hz
+  mode?: 'cw' | 'psk31'; // decoder mode — undefined means 'cw' (legacy records)
 }
 
 export interface SSTVFrame {
