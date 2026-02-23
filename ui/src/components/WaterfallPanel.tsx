@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { addIQListener } from '../workers/iqWorkerSingleton.js';
 
+const LS_KEY = 'waterfall-open';
+
 // ── Colour LUT (black → blue → cyan → yellow → white) ───────────────────────
 
 function buildColorLut(): Uint8ClampedArray {
@@ -73,8 +75,15 @@ export function WaterfallPanel() {
   const [centerFreq, setCenterFreq] = useState<number | null>(null);
   const [sampleRate, setSampleRate] = useState<number | null>(null);
   const wfDataRef = useRef<ImageData | null>(null);
+  const [open, setOpen] = useState<boolean>(() => localStorage.getItem(LS_KEY) === 'true');
+
+  // Persist open/closed state
+  useEffect(() => {
+    localStorage.setItem(LS_KEY, String(open));
+  }, [open]);
 
   useEffect(() => {
+    if (!open) return;
     const unsub = addIQListener((msg) => {
       if (msg.type === 'status') {
         setConnected(msg.connected);
@@ -215,7 +224,7 @@ export function WaterfallPanel() {
       }
     });
     return unsub;
-  }, []);
+  }, [open]);
 
   // Resize canvases on mount
   useEffect(() => {
@@ -249,42 +258,58 @@ export function WaterfallPanel() {
         <h2 className="text-white text-lg font-semibold tracking-wide flex-1">
           Spectrum &amp; Waterfall
         </h2>
-        <span
-          className={`inline-block w-2 h-2 rounded-full ${connected ? 'bg-emerald-400' : 'bg-red-500'}`}
-          title={connected ? 'Connected' : 'Connecting…'}
-        />
-        <span className="text-white/40 text-xs font-mono">
-          {loMHz} – {hiMHz} MHz &nbsp;|&nbsp; {bwMHz} MHz BW
-        </span>
-      </div>
-
-      <div className="relative w-full mb-1">
-        <canvas
-          ref={specCanvasRef}
-          className="w-full block rounded-t-lg bg-black/60"
-          style={{ height: `${SPECTRUM_HEIGHT}px` }}
-        />
-        <div className="absolute top-0 right-1 h-full flex flex-col justify-between pointer-events-none">
-          {[-50, -63, -77, -90, -103].map((db) => (
-            <span key={db} className="text-white/30 text-[9px] font-mono leading-none">
-              {db}
+        {open && (
+          <>
+            <span
+              className={`inline-block w-2 h-2 rounded-full ${connected ? 'bg-emerald-400' : 'bg-red-500'}`}
+              title={connected ? 'Connected' : 'Connecting…'}
+            />
+            <span className="text-white/40 text-xs font-mono">
+              {loMHz} – {hiMHz} MHz &nbsp;|&nbsp; {bwMHz} MHz BW
             </span>
-          ))}
-        </div>
+          </>
+        )}
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="text-white/40 hover:text-white/80 transition-colors text-xs font-mono px-2 py-0.5 rounded border border-white/10 hover:border-white/30"
+          aria-label={open ? 'Collapse waterfall' : 'Expand waterfall'}
+        >
+          {open ? '▲ hide' : '▼ show'}
+        </button>
       </div>
 
-      <canvas
-        ref={wfCanvasRef}
-        className="w-full block rounded-b-lg"
-        style={{
-          height: `${WATERFALL_ROWS}px`,
-          imageRendering: 'pixelated',
-          minHeight: `${WATERFALL_ROWS}px`,
-        }}
-      />
+      {open && (
+        <>
+          <div className="relative w-full mb-1">
+            <canvas
+              ref={specCanvasRef}
+              className="w-full block rounded-t-lg bg-black/60"
+              style={{ height: `${SPECTRUM_HEIGHT}px` }}
+            />
+            <div className="absolute top-0 right-1 h-full flex flex-col justify-between pointer-events-none">
+              {[-50, -63, -77, -90, -103].map((db) => (
+                <span key={db} className="text-white/30 text-[9px] font-mono leading-none">
+                  {db}
+                </span>
+              ))}
+            </div>
+          </div>
 
-      {!connected && (
-        <p className="text-white/30 text-xs text-center mt-2 italic">Connecting to IQ stream…</p>
+          <canvas
+            ref={wfCanvasRef}
+            className="w-full block rounded-b-lg"
+            style={{
+              height: `${WATERFALL_ROWS}px`,
+              imageRendering: 'pixelated',
+              minHeight: `${WATERFALL_ROWS}px`,
+            }}
+          />
+
+          {!connected && (
+            <p className="text-white/30 text-xs text-center mt-2 italic">Connecting to IQ stream…</p>
+          )}
+        </>
       )}
     </div>
   );
