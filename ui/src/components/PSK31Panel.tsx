@@ -10,6 +10,9 @@
  *   Left (35%): scrollable session list (newest first), amber dot for live.
  *   Right (65%): selected session text or live decode stream.
  *
+ * Signal validity: live SNR from the carrier scan is shown in the detail pane.
+ * SNR ≥ 5× is considered good; sessions shorter than 3 chars are flagged.
+ *
  * Scans ±2 kHz around 14.070 MHz to lock onto the strongest PSK31 carrier.
  */
 
@@ -18,6 +21,50 @@ import type { CWSocketMessage } from '../types.js';
 import type { ApiSession } from '../utils/api.js';
 import { fetchSessions } from '../utils/api.js';
 import { useAccordion } from '../utils/useAccordion.js';
+
+// ── Signal quality helpers ────────────────────────────────────────────────────
+
+type QualityLevel = 'good' | 'fair' | 'poor';
+
+/** Classify a session by text length — very short sessions are likely noise. */
+function sessionQuality(text: string): QualityLevel {
+  const trimmed = text.trim();
+  if (trimmed.length < 3) return 'poor';
+  if (trimmed.length < 8) return 'fair';
+  return 'good';
+}
+
+/** Classify live SNR (ratio, not dB). */
+function snrQuality(snr: number): QualityLevel {
+  if (snr <= 0) return 'poor';
+  if (snr >= 5) return 'good';
+  if (snr >= 2) return 'fair';
+  return 'poor';
+}
+
+const QUALITY_META: Record<QualityLevel, { dot: string; label: string; desc: string }> = {
+  good: { dot: 'bg-emerald-400', label: 'Good', desc: 'Signal quality: good' },
+  fair: { dot: 'bg-amber-400',   label: 'Fair', desc: 'Signal quality: fair' },
+  poor: { dot: 'bg-red-500',     label: 'Poor', desc: 'Signal quality: poor — weak or noisy carrier' },
+};
+
+function QualityBadge({ quality }: { quality: QualityLevel }) {
+  const { dot, label, desc } = QUALITY_META[quality];
+  if (quality === 'good') return null;
+  return (
+    <span
+      className={`inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded border border-white/10 ${quality === 'poor' ? 'text-red-400/80' : 'text-amber-400/80'}`}
+      title={desc}
+      role="img"
+      aria-label={desc}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full ${dot}`} aria-hidden />
+      {label}
+    </span>
+  );
+}
+
+// ── Token rendering ───────────────────────────────────────────────────────────
 
 interface PSK31Token {
   id: number;
@@ -36,7 +83,7 @@ function tokenise(text: string): PSK31Token[] {
 
 function PSK31Char({ token }: { token: PSK31Token }) {
   if (token.char === ' ') {
-    return <span className="inline-block w-4" />;
+    return <span className="inline-block w-4" aria-hidden />;
   }
   return (
     <span className="inline-block cursor-default select-none">
@@ -51,10 +98,12 @@ function PSK31Text({ tokens, cursor }: { tokens: PSK31Token[]; cursor?: boolean 
       {tokens.map((tok) => (
         <PSK31Char key={tok.id} token={tok} />
       ))}
-      {cursor && <span className="cw-cursor" />}
+      {cursor && <span className="cw-cursor" aria-hidden />}
     </p>
   );
 }
+
+// ── Shared UI helpers ─────────────────────────────────────────────────────────
 
 function copyToClipboard(text: string): Promise<void> {
   if (typeof navigator.clipboard?.writeText === 'function') {
@@ -77,6 +126,7 @@ function CopyButton({ text }: { text: string }) {
   return (
     <button
       type="button"
+      aria-label={copied ? 'Copied to clipboard' : 'Copy decoded text to clipboard'}
       onClick={() => {
         copyToClipboard(text).then(() => {
           setCopied(true);
@@ -94,6 +144,7 @@ function StatusDot({ live }: { live: boolean }) {
   return (
     <span
       className={`inline-block w-2 h-2 rounded-full shrink-0 ${live ? 'bg-amber-400 animate-pulse' : 'bg-white/20'}`}
+      aria-hidden
     />
   );
 }
@@ -121,6 +172,7 @@ interface SessionState {
   liveText: string;
   liveFreq: number;
   liveStartTs: string;
+  liveSnr: number;
 }
 
 function usePSK31State(open: boolean): SessionState {
@@ -131,17 +183,15 @@ function usePSK31State(open: boolean): SessionState {
   const [liveText, setLiveText] = useState('');
   const [liveFreq, setLiveFreq] = useState<number>(14_070_000);
   const [liveStartTs, setLiveStartTs] = useState<string>('');
+  const [liveSnr, setLiveSnr] = useState(0);
 
   const liveTextRef  = useRef('');
   const liveFreqRef  = useRef(14_070_000);
   const liveStartRef = useRef('');
 
-  // Load history from REST on panel open
   useEffect(() => {
     if (!open) return;
-    fetchSessions('psk31').then((rows) => {
-      setSessions(rows);
-    });
+    fetchSessions('psk31').then((rows) => setSessions(rows));
   }, [open]);
 
   const resetLive = useCallback(() => {
@@ -150,6 +200,7 @@ function usePSK31State(open: boolean): SessionState {
     setLiveText('');
     setLiveTokens([]);
     setLiveStartTs('');
+    setLiveSnr(0);
   }, []);
 
   useEffect(() => {
@@ -184,6 +235,7 @@ function usePSK31State(open: boolean): SessionState {
         } else if (msg.type === 'char') {
           liveFreqRef.current = msg.freq;
           setLiveFreq(msg.freq);
+          if (msg.snr !== undefined) setLiveSnr(msg.snr);
           if (!liveStartRef.current) {
             liveStartRef.current = msg.ts;
             setLiveStartTs(msg.ts);
@@ -196,7 +248,6 @@ function usePSK31State(open: boolean): SessionState {
           setLiveText(liveTextRef.current);
           setLiveTokens((prev) => [...prev, makeToken(' ')]);
         } else if (msg.type === 'session') {
-          // Server flushed a session — prepend to history and clear live state
           const saved: ApiSession = {
             id: msg.id,
             mode: msg.mode,
@@ -219,37 +270,37 @@ function usePSK31State(open: boolean): SessionState {
     };
   }, [open, resetLive]);
 
-  return {
-    sessions,
-    selectedId,
-    setSelectedId,
-    connected,
-    liveTokens,
-    liveText,
-    liveFreq,
-    liveStartTs,
-  };
+  return { sessions, selectedId, setSelectedId, connected,
+           liveTokens, liveText, liveFreq, liveStartTs, liveSnr };
 }
 
 // ── Session panel (master-detail list + detail pane) ─────────────────────────
 
 function SessionPanel({ state }: { state: SessionState }) {
   const { sessions, selectedId, setSelectedId, connected, liveTokens,
-          liveText, liveFreq, liveStartTs } = state;
+          liveText, liveFreq, liveStartTs, liveSnr } = state;
 
   const selectedSession =
     selectedId !== 'live' ? (sessions.find((s) => s.id === selectedId) ?? null) : null;
 
   const isLive = liveText.length > 0;
+  const liveQuality = liveSnr > 0 ? snrQuality(liveSnr) : undefined;
 
   return (
     <div className="flex" style={{ minHeight: '400px', maxHeight: '60vh' }}>
       {/* Left: session list (35%) */}
-      <div className="w-[35%] border-r border-white/10 overflow-y-auto shrink-0">
+      <nav
+        className="w-[35%] border-r border-white/10 overflow-y-auto shrink-0"
+        aria-label="PSK31 session list"
+      >
         {/* Live session entry */}
         <button
           type="button"
           onClick={() => setSelectedId('live')}
+          aria-pressed={selectedId === 'live'}
+          aria-label={isLive
+            ? `Live — receiving PSK31 at ${formatFreq(liveFreq)}${liveSnr > 0 ? `, SNR ${liveSnr.toFixed(1)}×` : ''}`
+            : 'Live — waiting for PSK31 signal'}
           className={`w-full text-left px-4 py-3 border-b border-white/6 transition-colors flex items-start gap-2
             ${selectedId === 'live' ? 'bg-white/8' : 'hover:bg-white/4'}`}
         >
@@ -257,81 +308,116 @@ function SessionPanel({ state }: { state: SessionState }) {
           <div className="min-w-0">
             <p className="text-xs text-amber-400 font-semibold">Live</p>
             {liveStartTs && (
-              <p className="text-[10px] text-white/30 font-mono">{formatTime(liveStartTs)}</p>
-            )}
-            {liveText && (
-              <p className="text-[10px] text-white/50 font-mono truncate mt-0.5">
-                {liveText.slice(0, 30)}
+              <p className="text-[10px] text-white/30 font-mono">
+                <time dateTime={liveStartTs}>{formatTime(liveStartTs)}</time>
               </p>
             )}
-            {!liveText && <p className="text-[10px] text-white/20 italic">Waiting for signal…</p>}
+            {liveText ? (
+              <p className="text-[10px] text-white/50 font-mono truncate mt-0.5" aria-hidden>
+                {liveText.slice(0, 30)}
+              </p>
+            ) : (
+              <p className="text-[10px] text-white/20 italic">Waiting for signal…</p>
+            )}
           </div>
         </button>
 
         {/* Past sessions */}
-        {sessions.map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            onClick={() => setSelectedId(s.id)}
-            className={`w-full text-left px-4 py-3 border-b border-white/6 transition-colors flex items-start gap-2
-              ${selectedId === s.id ? 'bg-white/8' : 'hover:bg-white/4'}`}
-          >
-            <StatusDot live={false} />
-            <div className="min-w-0">
-              <p className="text-xs text-white/70 font-mono">{formatTime(s.start_ts)}</p>
-              <p className="text-[10px] text-white/30 font-mono">{formatFreq(s.freq_hz)}</p>
-              <p className="text-[10px] text-white/50 font-mono truncate mt-0.5">
-                {s.text.slice(0, 30)}
-              </p>
-            </div>
-          </button>
-        ))}
+        {sessions.map((s) => {
+          const quality = sessionQuality(s.text);
+          return (
+            <button
+              key={s.id}
+              type="button"
+              onClick={() => setSelectedId(s.id)}
+              aria-pressed={selectedId === s.id}
+              aria-label={`Session at ${formatTime(s.start_ts)}, ${formatFreq(s.freq_hz)}, signal quality ${QUALITY_META[quality].label}`}
+              className={`w-full text-left px-4 py-3 border-b border-white/6 transition-colors flex items-start gap-2
+                ${selectedId === s.id ? 'bg-white/8' : 'hover:bg-white/4'}`}
+            >
+              <StatusDot live={false} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <p className="text-xs text-white/70 font-mono">
+                    <time dateTime={s.start_ts}>{formatTime(s.start_ts)}</time>
+                  </p>
+                  <QualityBadge quality={quality} />
+                </div>
+                <p className="text-[10px] text-white/30 font-mono">{formatFreq(s.freq_hz)}</p>
+                <p className="text-[10px] text-white/50 font-mono truncate mt-0.5" aria-hidden>
+                  {s.text.slice(0, 30)}
+                </p>
+              </div>
+            </button>
+          );
+        })}
 
         {sessions.length === 0 && !isLive && (
-          <p className="text-white/20 text-xs italic p-4">No sessions yet.</p>
+          <output className="block text-white/20 text-xs italic p-4">No sessions yet.</output>
         )}
-      </div>
+      </nav>
 
       {/* Right: detail pane (65%) */}
-      <div className="flex-1 overflow-y-auto p-6 font-mono">
+      <section
+        className="flex-1 overflow-y-auto p-6 font-mono"
+        aria-label={
+          selectedId === 'live'
+            ? 'Live PSK31 decode'
+            : selectedSession
+            ? `PSK31 session from ${formatTime(selectedSession.start_ts)}`
+            : 'No session selected'
+        }
+        aria-live={selectedId === 'live' ? 'polite' : undefined}
+        aria-atomic={false}
+      >
         {selectedId === 'live' ? (
           <>
             <div className="flex items-center gap-2 mb-3">
-              {liveStartTs && (
-                <p className="text-white/30 text-xs flex-1">
-                  {formatTime(liveStartTs)} · {formatFreq(liveFreq)}
-                </p>
-              )}
+              <p className="text-white/30 text-xs flex-1 font-mono">
+                {liveStartTs && (
+                  <>
+                    <time dateTime={liveStartTs}>{formatTime(liveStartTs)}</time>
+                    {' · '}
+                  </>
+                )}
+                {formatFreq(liveFreq)}
+                {liveSnr > 0 && (
+                  <span className={`ml-2 ${liveQuality === 'poor' ? 'text-red-400/70' : liveQuality === 'fair' ? 'text-amber-400/70' : 'text-emerald-400/70'}`}>
+                    SNR {liveSnr.toFixed(1)}×
+                  </span>
+                )}
+              </p>
               {liveText && <CopyButton text={liveText} />}
             </div>
             {liveTokens.length > 0 ? (
               <PSK31Text tokens={liveTokens} cursor />
             ) : (
-              <p className="text-white/20 text-xs italic">
-                {connected ? 'Waiting for PSK31 signal…' : 'Connecting…'}
-              </p>
+              <output className="block text-white/20 text-xs italic">
+                {connected ? 'Waiting for PSK31 signal…' : 'Connecting to PSK31 decoder…'}
+              </output>
             )}
           </>
-
         ) : selectedSession ? (
           <>
             <div className="flex items-center gap-2 mb-3">
-              <p className="text-white/30 text-xs flex-1">
-                {formatTime(selectedSession.start_ts)}
-                {' – '}
-                {formatTime(selectedSession.end_ts)}
-                {' · '}
-                {formatFreq(selectedSession.freq_hz)}
-              </p>
+              <div className="flex-1 flex items-center gap-2 flex-wrap">
+                <p className="text-white/30 text-xs font-mono">
+                  <time dateTime={selectedSession.start_ts}>{formatTime(selectedSession.start_ts)}</time>
+                  {' – '}
+                  <time dateTime={selectedSession.end_ts}>{formatTime(selectedSession.end_ts)}</time>
+                  {' · '}
+                  {formatFreq(selectedSession.freq_hz)}
+                </p>
+                <QualityBadge quality={sessionQuality(selectedSession.text)} />
+              </div>
               <CopyButton text={selectedSession.text} />
             </div>
             <PSK31Text tokens={tokenise(selectedSession.text)} />
           </>
         ) : (
-          <p className="text-white/20 text-xs italic">Select a session.</p>
+          <output className="block text-white/20 text-xs italic">Select a session from the list.</output>
         )}
-      </div>
+      </section>
     </div>
   );
 }
@@ -347,16 +433,18 @@ export function PSK31Panel() {
       {/* Header */}
       <div className="flex items-center gap-2 px-6 py-4 border-b border-white/10">
         <div className="flex-1">
-          <h2 className="text-white text-xl font-semibold tracking-wide">
+          <h2 className="text-white text-xl font-semibold tracking-wide" id="psk31-panel-heading">
             PSK31 — 14.070 ±2kHz
           </h2>
           {open && (
-            <p className="text-white/40 text-xs mt-0.5 font-mono">
+            <p className="text-white/40 text-xs mt-0.5 font-mono" aria-live="polite">
               <span
                 className={`inline-block w-2 h-2 rounded-full mr-1.5 ${state.connected ? 'bg-emerald-400' : 'bg-red-500'}`}
+                aria-hidden
               />
+              <span className="sr-only">{state.connected ? 'Connected.' : 'Not connected.'}</span>
               {state.connected
-                ? `${formatFreq(state.liveFreq)} · ${state.sessions.length} sessions`
+                ? `${formatFreq(state.liveFreq)} · ${state.sessions.length} session${state.sessions.length === 1 ? '' : 's'}`
                 : 'Connecting to PSK31 decoder…'}
             </p>
           )}
@@ -365,14 +453,19 @@ export function PSK31Panel() {
           type="button"
           onClick={toggleOpen}
           className="text-white/40 hover:text-white/80 transition-colors text-xs font-mono px-2 py-0.5 rounded border border-white/10 hover:border-white/30"
-          aria-label={open ? 'Collapse PSK31 sessions' : 'Expand PSK31 sessions'}
+          aria-label={open ? 'Collapse PSK31 sessions panel' : 'Expand PSK31 sessions panel'}
+          aria-expanded={open}
+          aria-controls="psk31-panel-body"
         >
           {open ? '▲ hide' : '▼ show'}
         </button>
       </div>
 
-      {/* Master-detail body */}
-      {open && <SessionPanel state={state} />}
+      {open && (
+        <div id="psk31-panel-body">
+          <SessionPanel state={state} />
+        </div>
+      )}
     </div>
   );
 }

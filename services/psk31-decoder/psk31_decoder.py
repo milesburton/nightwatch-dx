@@ -327,7 +327,8 @@ class PSK31SignalChain:
                 if ch == ' ':
                     events.append({'type': 'word_space', 'freq': carrier_hz, 'ts': ts})
                 elif ch.isprintable():
-                    events.append({'type': 'char', 'char': ch, 'freq': carrier_hz, 'ts': ts})
+                    events.append({'type': 'char', 'char': ch, 'freq': carrier_hz, 'ts': ts,
+                                   'snr': round(self._carrier_snr, 1)})
                     log.debug("char: %r  (carrier %.1f Hz)", ch, self._carrier_offset_hz)
 
             self._sample_acc = 0.0

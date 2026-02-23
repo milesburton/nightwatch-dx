@@ -10,8 +10,11 @@
  *   Left (35%): scrollable session list (newest first), amber dot for live.
  *   Right (65%): selected session text or live decode stream.
  *
- * Each decoded character is a hoverable token — plain text visible by default,
- * Morse dots/dashes revealed on hover.
+ * Signal validity: garbled characters appear as [dit-dah sequences] in square
+ * brackets. Sessions with >30% garbled chars are flagged as poor quality.
+ * Live WPM is shown in the detail pane header.
+ *
+ * Each recognised character is a hoverable token — hover reveals Morse notation.
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -36,34 +39,102 @@ const CHAR_TO_MORSE: Record<string, string> = {
   '$': '...-..-', '@': '.--.-.',
 };
 
+/** A character is garbled when the decoder couldn't match a Morse sequence,
+ *  producing a bracketed fallback like [.-..-.] */
+function isGarbled(ch: string): boolean {
+  return ch.startsWith('[') && ch.endsWith(']');
+}
+
+/** 0–1 fraction of garbled tokens in text (each bracket group = 1 token). */
+function garbledRatio(text: string): number {
+  if (!text) return 0;
+  const tokens = text.split(/(\[[^\]]+\])/g).filter(Boolean);
+  const garbledCount = tokens.filter((t) => t.startsWith('[') && t.endsWith(']')).length;
+  const total = tokens.reduce((acc, t) => acc + (t.startsWith('[') ? 1 : t.length), 0);
+  return total === 0 ? 0 : garbledCount / total;
+}
+
+type QualityLevel = 'good' | 'fair' | 'poor';
+
+function sessionQuality(text: string): QualityLevel {
+  const ratio = garbledRatio(text);
+  if (ratio > 0.35) return 'poor';
+  if (ratio > 0.12) return 'fair';
+  return 'good';
+}
+
+const QUALITY_META: Record<QualityLevel, { dot: string; label: string; desc: string }> = {
+  good: { dot: 'bg-emerald-400', label: 'Good', desc: 'Signal quality: good — most characters recognised' },
+  fair: { dot: 'bg-amber-400',   label: 'Fair', desc: 'Signal quality: fair — some unrecognised Morse sequences' },
+  poor: { dot: 'bg-red-500',     label: 'Poor', desc: 'Signal quality: poor — high proportion of unrecognised Morse sequences' },
+};
+
+function QualityBadge({ quality }: { quality: QualityLevel }) {
+  const { dot, label, desc } = QUALITY_META[quality];
+  if (quality === 'good') return null;
+  return (
+    <span
+      className={`inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded border border-white/10 ${quality === 'poor' ? 'text-red-400/80' : 'text-amber-400/80'}`}
+      title={desc}
+      role="img"
+      aria-label={desc}
+    >
+      <span className={`w-1.5 h-1.5 rounded-full ${dot}`} aria-hidden />
+      {label}
+    </span>
+  );
+}
+
 interface CWToken {
   id: number;
   char: string;
   morse: string;
+  garbled: boolean;
 }
 
 let _tokenId = 0;
 
 function makeToken(ch: string): CWToken {
+  const g = isGarbled(ch);
   return {
     id: _tokenId++,
     char: ch,
-    morse: ch === ' ' ? '' : (CHAR_TO_MORSE[ch.toUpperCase()] ?? '?'),
+    morse: g ? ch : (ch === ' ' ? '' : (CHAR_TO_MORSE[ch.toUpperCase()] ?? '?')),
+    garbled: g,
   };
 }
 
 function tokenise(text: string): CWToken[] {
-  return [...text].map(makeToken);
+  return text.split(/(\[[^\]]+\])/g).filter(Boolean).flatMap((seg) => {
+    if (seg.startsWith('[') && seg.endsWith(']')) return [makeToken(seg)];
+    return [...seg].map(makeToken);
+  });
 }
 
 function CWChar({ token }: { token: CWToken }) {
   if (token.char === ' ') {
-    return <span className="inline-block w-4" />;
+    return <span className="inline-block w-4" aria-hidden />;
+  }
+
+  if (token.garbled) {
+    return (
+      <span
+        className="inline-block font-mono text-red-400/70 text-[0.7em] align-middle px-0.5"
+        title={`Unrecognised Morse sequence: ${token.char}`}
+        role="img"
+        aria-label={`Unrecognised Morse sequence ${token.char}`}
+      >
+        {token.char}
+      </span>
+    );
   }
 
   return (
-    <span className="group relative inline-block cursor-default select-none">
-      <span className="group-hover:opacity-0 transition-opacity duration-100">
+    <span
+      className="group relative inline-block cursor-default select-none"
+      title={`${token.char} — Morse: ${token.morse}`}
+    >
+      <span className="group-hover:opacity-0 transition-opacity duration-100" aria-hidden>
         {token.char}
       </span>
       <span
@@ -82,7 +153,7 @@ function CWText({ tokens, cursor }: { tokens: CWToken[]; cursor?: boolean }) {
       {tokens.map((tok) => (
         <CWChar key={tok.id} token={tok} />
       ))}
-      {cursor && <span className="cw-cursor" />}
+      {cursor && <span className="cw-cursor" aria-hidden />}
     </p>
   );
 }
@@ -108,6 +179,7 @@ function CopyButton({ text }: { text: string }) {
   return (
     <button
       type="button"
+      aria-label={copied ? 'Copied to clipboard' : 'Copy decoded text to clipboard'}
       onClick={() => {
         copyToClipboard(text).then(() => {
           setCopied(true);
@@ -125,6 +197,7 @@ function StatusDot({ live }: { live: boolean }) {
   return (
     <span
       className={`inline-block w-2 h-2 rounded-full shrink-0 ${live ? 'bg-amber-400 animate-pulse' : 'bg-white/20'}`}
+      aria-hidden
     />
   );
 }
@@ -152,6 +225,7 @@ interface SessionState {
   liveText: string;
   liveFreq: number;
   liveStartTs: string;
+  liveWpm: number;
 }
 
 function useCWState(open: boolean): SessionState {
@@ -162,17 +236,15 @@ function useCWState(open: boolean): SessionState {
   const [liveText, setLiveText] = useState('');
   const [liveFreq, setLiveFreq] = useState<number>(14_029_000);
   const [liveStartTs, setLiveStartTs] = useState<string>('');
+  const [liveWpm, setLiveWpm] = useState(0);
 
   const liveTextRef  = useRef('');
   const liveFreqRef  = useRef(14_029_000);
   const liveStartRef = useRef('');
 
-  // Load history from REST on panel open
   useEffect(() => {
     if (!open) return;
-    fetchSessions('cw').then((rows) => {
-      setSessions(rows);
-    });
+    fetchSessions('cw').then((rows) => setSessions(rows));
   }, [open]);
 
   const resetLive = useCallback(() => {
@@ -181,6 +253,7 @@ function useCWState(open: boolean): SessionState {
     setLiveText('');
     setLiveTokens([]);
     setLiveStartTs('');
+    setLiveWpm(0);
   }, []);
 
   useEffect(() => {
@@ -215,6 +288,7 @@ function useCWState(open: boolean): SessionState {
         } else if (msg.type === 'char') {
           liveFreqRef.current = msg.freq;
           setLiveFreq(msg.freq);
+          if (msg.wpm) setLiveWpm(msg.wpm);
           if (!liveStartRef.current) {
             liveStartRef.current = msg.ts;
             setLiveStartTs(msg.ts);
@@ -227,7 +301,6 @@ function useCWState(open: boolean): SessionState {
           setLiveText(liveTextRef.current);
           setLiveTokens((prev) => [...prev, makeToken(' ')]);
         } else if (msg.type === 'session') {
-          // Server flushed a session — prepend to history and clear live state
           const saved: ApiSession = {
             id: msg.id,
             mode: msg.mode,
@@ -250,23 +323,15 @@ function useCWState(open: boolean): SessionState {
     };
   }, [open, resetLive]);
 
-  return {
-    sessions,
-    selectedId,
-    setSelectedId,
-    connected,
-    liveTokens,
-    liveText,
-    liveFreq,
-    liveStartTs,
-  };
+  return { sessions, selectedId, setSelectedId, connected,
+           liveTokens, liveText, liveFreq, liveStartTs, liveWpm };
 }
 
 // ── Session panel (master-detail list + detail pane) ─────────────────────────
 
-function SessionPanel({ state, hintText }: { state: SessionState; hintText: string }) {
+function SessionPanel({ state }: { state: SessionState }) {
   const { sessions, selectedId, setSelectedId, connected, liveTokens,
-          liveText, liveFreq, liveStartTs } = state;
+          liveText, liveFreq, liveStartTs, liveWpm } = state;
 
   const selectedSession =
     selectedId !== 'live' ? (sessions.find((s) => s.id === selectedId) ?? null) : null;
@@ -276,11 +341,18 @@ function SessionPanel({ state, hintText }: { state: SessionState; hintText: stri
   return (
     <div className="flex" style={{ minHeight: '400px', maxHeight: '60vh' }}>
       {/* Left: session list (35%) */}
-      <div className="w-[35%] border-r border-white/10 overflow-y-auto shrink-0">
+      <nav
+        className="w-[35%] border-r border-white/10 overflow-y-auto shrink-0"
+        aria-label="CW session list"
+      >
         {/* Live session entry */}
         <button
           type="button"
           onClick={() => setSelectedId('live')}
+          aria-pressed={selectedId === 'live'}
+          aria-label={isLive
+            ? `Live — receiving CW at ${formatFreq(liveFreq)}${liveWpm ? `, ${liveWpm} WPM` : ''}`
+            : 'Live — waiting for CW signal'}
           className={`w-full text-left px-4 py-3 border-b border-white/6 transition-colors flex items-start gap-2
             ${selectedId === 'live' ? 'bg-white/8' : 'hover:bg-white/4'}`}
         >
@@ -288,81 +360,116 @@ function SessionPanel({ state, hintText }: { state: SessionState; hintText: stri
           <div className="min-w-0">
             <p className="text-xs text-amber-400 font-semibold">Live</p>
             {liveStartTs && (
-              <p className="text-[10px] text-white/30 font-mono">{formatTime(liveStartTs)}</p>
-            )}
-            {liveText && (
-              <p className="text-[10px] text-white/50 font-mono truncate mt-0.5">
-                {liveText.slice(0, 30)}
+              <p className="text-[10px] text-white/30 font-mono">
+                <time dateTime={liveStartTs}>{formatTime(liveStartTs)}</time>
               </p>
             )}
-            {!liveText && <p className="text-[10px] text-white/20 italic">Waiting for signal…</p>}
+            {liveText ? (
+              <p className="text-[10px] text-white/50 font-mono truncate mt-0.5" aria-hidden>
+                {liveText.slice(0, 30)}
+              </p>
+            ) : (
+              <p className="text-[10px] text-white/20 italic">Waiting for signal…</p>
+            )}
           </div>
         </button>
 
         {/* Past sessions */}
-        {sessions.map((s) => (
-          <button
-            key={s.id}
-            type="button"
-            onClick={() => setSelectedId(s.id)}
-            className={`w-full text-left px-4 py-3 border-b border-white/6 transition-colors flex items-start gap-2
-              ${selectedId === s.id ? 'bg-white/8' : 'hover:bg-white/4'}`}
-          >
-            <StatusDot live={false} />
-            <div className="min-w-0">
-              <p className="text-xs text-white/70 font-mono">{formatTime(s.start_ts)}</p>
-              <p className="text-[10px] text-white/30 font-mono">{formatFreq(s.freq_hz)}</p>
-              <p className="text-[10px] text-white/50 font-mono truncate mt-0.5">
-                {s.text.slice(0, 30)}
-              </p>
-            </div>
-          </button>
-        ))}
+        {sessions.map((s) => {
+          const quality = sessionQuality(s.text);
+          return (
+            <button
+              key={s.id}
+              type="button"
+              onClick={() => setSelectedId(s.id)}
+              aria-pressed={selectedId === s.id}
+              aria-label={`Session at ${formatTime(s.start_ts)}, ${formatFreq(s.freq_hz)}, signal quality ${QUALITY_META[quality].label}`}
+              className={`w-full text-left px-4 py-3 border-b border-white/6 transition-colors flex items-start gap-2
+                ${selectedId === s.id ? 'bg-white/8' : 'hover:bg-white/4'}`}
+            >
+              <StatusDot live={false} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <p className="text-xs text-white/70 font-mono">
+                    <time dateTime={s.start_ts}>{formatTime(s.start_ts)}</time>
+                  </p>
+                  <QualityBadge quality={quality} />
+                </div>
+                <p className="text-[10px] text-white/30 font-mono">{formatFreq(s.freq_hz)}</p>
+                <p className="text-[10px] text-white/50 font-mono truncate mt-0.5" aria-hidden>
+                  {s.text.slice(0, 30)}
+                </p>
+              </div>
+            </button>
+          );
+        })}
 
         {sessions.length === 0 && !isLive && (
-          <p className="text-white/20 text-xs italic p-4">No sessions yet.</p>
+          <output className="block text-white/20 text-xs italic p-4">No sessions yet.</output>
         )}
-      </div>
+      </nav>
 
       {/* Right: detail pane (65%) */}
-      <div className="flex-1 overflow-y-auto p-6 font-mono">
+      <section
+        className="flex-1 overflow-y-auto p-6 font-mono"
+        aria-label={
+          selectedId === 'live'
+            ? 'Live CW decode'
+            : selectedSession
+            ? `CW session from ${formatTime(selectedSession.start_ts)}`
+            : 'No session selected'
+        }
+        aria-live={selectedId === 'live' ? 'polite' : undefined}
+        aria-atomic={false}
+      >
         {selectedId === 'live' ? (
           <>
             <div className="flex items-center gap-2 mb-3">
-              {liveStartTs && (
-                <p className="text-white/30 text-xs flex-1">
-                  {formatTime(liveStartTs)} · {formatFreq(liveFreq)}
-                </p>
-              )}
+              <p className="text-white/30 text-xs flex-1 font-mono">
+                {liveStartTs && (
+                  <>
+                    <time dateTime={liveStartTs}>{formatTime(liveStartTs)}</time>
+                    {' · '}
+                  </>
+                )}
+                {formatFreq(liveFreq)}
+                {liveWpm > 0 && (
+                  <span className="ml-2 text-amber-400/70">
+                    {liveWpm} WPM
+                  </span>
+                )}
+              </p>
               {liveText && <CopyButton text={liveText} />}
             </div>
             {liveTokens.length > 0 ? (
               <CWText tokens={liveTokens} cursor />
             ) : (
-              <p className="text-white/20 text-xs italic">
-                {connected ? `Waiting for ${hintText} signal…` : 'Connecting…'}
-              </p>
+              <output className="block text-white/20 text-xs italic">
+                {connected ? 'Waiting for CW signal…' : 'Connecting to CW decoder…'}
+              </output>
             )}
           </>
-
         ) : selectedSession ? (
           <>
             <div className="flex items-center gap-2 mb-3">
-              <p className="text-white/30 text-xs flex-1">
-                {formatTime(selectedSession.start_ts)}
-                {' – '}
-                {formatTime(selectedSession.end_ts)}
-                {' · '}
-                {formatFreq(selectedSession.freq_hz)}
-              </p>
+              <div className="flex-1 flex items-center gap-2 flex-wrap">
+                <p className="text-white/30 text-xs font-mono">
+                  <time dateTime={selectedSession.start_ts}>{formatTime(selectedSession.start_ts)}</time>
+                  {' – '}
+                  <time dateTime={selectedSession.end_ts}>{formatTime(selectedSession.end_ts)}</time>
+                  {' · '}
+                  {formatFreq(selectedSession.freq_hz)}
+                </p>
+                <QualityBadge quality={sessionQuality(selectedSession.text)} />
+              </div>
               <CopyButton text={selectedSession.text} />
             </div>
             <CWText tokens={tokenise(selectedSession.text)} />
           </>
         ) : (
-          <p className="text-white/20 text-xs italic">Select a session.</p>
+          <output className="block text-white/20 text-xs italic">Select a session from the list.</output>
         )}
-      </div>
+      </section>
     </div>
   );
 }
@@ -378,35 +485,44 @@ export function CWLogPanel() {
       {/* Header */}
       <div className="flex items-center gap-2 px-6 py-4 border-b border-white/10">
         <div className="flex-1">
-          <h2 className="text-white text-xl font-semibold tracking-wide">
+          <h2 className="text-white text-xl font-semibold tracking-wide" id="cw-panel-heading">
             CW — 14.029 MHz
           </h2>
           {open && (
-            <p className="text-white/40 text-xs mt-0.5 font-mono">
+            <p className="text-white/40 text-xs mt-0.5 font-mono" aria-live="polite">
               <span
                 className={`inline-block w-2 h-2 rounded-full mr-1.5 ${state.connected ? 'bg-emerald-400' : 'bg-red-500'}`}
+                aria-hidden
               />
+              <span className="sr-only">{state.connected ? 'Connected.' : 'Not connected.'}</span>
               {state.connected
-                ? `${formatFreq(state.liveFreq)} · ${state.sessions.length} sessions`
+                ? `${formatFreq(state.liveFreq)} · ${state.sessions.length} session${state.sessions.length === 1 ? '' : 's'}`
                 : 'Connecting to CW decoder…'}
             </p>
           )}
         </div>
         {open && (
-          <p className="text-white/20 text-[10px] font-mono italic">hover chars for morse</p>
+          <p className="text-white/20 text-[10px] font-mono italic" aria-hidden>
+            hover chars for morse
+          </p>
         )}
         <button
           type="button"
           onClick={toggleOpen}
           className="text-white/40 hover:text-white/80 transition-colors text-xs font-mono px-2 py-0.5 rounded border border-white/10 hover:border-white/30"
-          aria-label={open ? 'Collapse CW sessions' : 'Expand CW sessions'}
+          aria-label={open ? 'Collapse CW sessions panel' : 'Expand CW sessions panel'}
+          aria-expanded={open}
+          aria-controls="cw-panel-body"
         >
           {open ? '▲ hide' : '▼ show'}
         </button>
       </div>
 
-      {/* Master-detail body */}
-      {open && <SessionPanel state={state} hintText="CW" />}
+      {open && (
+        <div id="cw-panel-body">
+          <SessionPanel state={state} />
+        </div>
+      )}
     </div>
   );
 }

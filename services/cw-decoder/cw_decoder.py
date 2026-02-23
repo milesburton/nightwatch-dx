@@ -312,7 +312,7 @@ class MorseDecoder:
         self._symbols = []
         wpm = int(round(60 / (50 * (self._dit_est / AUDIO_RATE)))) if self._dit_est > 0 else 0
         log.info("decoded %r from %r  dit_est=%.0f samp (%d WPM)", char, code, self._dit_est, wpm)
-        return [{'type': 'char', 'char': char, 'freq': CW_FREQ_HZ, 'ts': ts}]
+        return [{'type': 'char', 'char': char, 'freq': CW_FREQ_HZ, 'ts': ts, 'wpm': wpm}]
 
 
 class Hub:
