@@ -38,6 +38,10 @@ services:
       MUX_HOST: "rtl-bridge"
       MUX_PORT: "1237"
       WS_PORT: "8765"
+      DB_PATH: "/data/dx-watch.db"
+      FRAMES_DIR: "/data/frames"
+    volumes:
+      - dx-data:/data
 
   # ── SSTV decoder ──────────────────────────────────────────────────────────
   sstv-decoder:
@@ -53,6 +57,10 @@ services:
       MUX_HOST: "rtl-bridge"
       MUX_PORT: "1238"
       WS_PORT: "8766"
+      DB_PATH: "/data/dx-watch.db"
+      FRAMES_DIR: "/data/frames"
+    volumes:
+      - dx-data:/data
 
   # ── EasyPal decoder ───────────────────────────────────────────────────────
   easypal-decoder:
@@ -68,6 +76,10 @@ services:
       MUX_HOST: "rtl-bridge"
       MUX_PORT: "1239"
       WS_PORT: "8767"
+      DB_PATH: "/data/dx-watch.db"
+      FRAMES_DIR: "/data/frames"
+    volumes:
+      - dx-data:/data
 
   # ── PSK31 decoder ─────────────────────────────────────────────────────────
   psk31-decoder:
@@ -83,6 +95,30 @@ services:
       MUX_HOST: "rtl-bridge"
       MUX_PORT: "1240"
       WS_PORT: "8768"
+      DB_PATH: "/data/dx-watch.db"
+      FRAMES_DIR: "/data/frames"
+    volumes:
+      - dx-data:/data
+
+  # ── API service ───────────────────────────────────────────────────────────
+  api:
+    image: ghcr.io/milesburton/dx-watch/api:latest
+    build:
+      context: .
+      dockerfile: docker/api/Dockerfile
+    container_name: dx-watch-api
+    restart: unless-stopped
+    depends_on:
+      - cw-decoder
+      - psk31-decoder
+      - sstv-decoder
+      - easypal-decoder
+    environment:
+      DB_PATH: "/data/dx-watch.db"
+      FRAMES_DIR: "/data/frames"
+      API_PORT: "8900"
+    volumes:
+      - dx-data:/data
 
   # ── Web UI ────────────────────────────────────────────────────────────────
   ui:
@@ -98,5 +134,9 @@ services:
       - sstv-decoder
       - easypal-decoder
       - psk31-decoder
+      - api
     ports:
       - "8080:80"
+
+volumes:
+  dx-data:    # persistent storage shared by all decoders and the api service

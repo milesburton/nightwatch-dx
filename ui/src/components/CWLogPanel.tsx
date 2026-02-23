@@ -2,8 +2,9 @@
  * CWLogPanel — persistent session log for CW (Morse code) transmissions.
  *
  * Receives decoded characters from the cw-decoder Python backend via
- * WebSocket at /ws/cw. Sessions are persisted in IndexedDB (sdr-monitor /
- * cw-sessions, mode = 'cw').
+ * WebSocket at /ws/cw. Session history is loaded from the REST API
+ * (/api/sessions?mode=cw) on panel open. The server flushes sessions
+ * after 30 s of inactivity and broadcasts a `session` notification.
  *
  * Layout: Fallout-style master-detail.
  *   Left (35%): scrollable session list (newest first), amber dot for live.
@@ -15,11 +16,9 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CWSocketMessage } from '../types.js';
-import type { CWSession } from '../utils/db.js';
-import { listCWSessions, saveCWSession } from '../utils/db.js';
+import type { ApiSession } from '../utils/api.js';
+import { fetchSessions } from '../utils/api.js';
 import { useAccordion } from '../utils/useAccordion.js';
-
-const SESSION_TIMEOUT_MS = 30_000;
 
 const CHAR_TO_MORSE: Record<string, string> = {
   A: '.-',    B: '-...',  C: '-.-.',  D: '-..',   E: '.',
@@ -145,7 +144,7 @@ function formatFreq(hz: number): string {
 // ── Session hook ──────────────────────────────────────────────────────────────
 
 interface SessionState {
-  sessions: CWSession[];
+  sessions: ApiSession[];
   selectedId: number | 'live';
   setSelectedId: (id: number | 'live') => void;
   connected: boolean;
@@ -156,7 +155,7 @@ interface SessionState {
 }
 
 function useCWState(open: boolean): SessionState {
-  const [sessions, setSessions] = useState<CWSession[]>([]);
+  const [sessions, setSessions] = useState<ApiSession[]>([]);
   const [selectedId, setSelectedId] = useState<number | 'live'>('live');
   const [connected, setConnected] = useState(false);
   const [liveTokens, setLiveTokens] = useState<CWToken[]>([]);
@@ -167,44 +166,22 @@ function useCWState(open: boolean): SessionState {
   const liveTextRef  = useRef('');
   const liveFreqRef  = useRef(14_029_000);
   const liveStartRef = useRef('');
-  const timerRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Load history from REST on panel open
   useEffect(() => {
-    listCWSessions().then((rows) => {
-      const filtered = rows.filter((s) => (s.mode ?? 'cw') === 'cw');
-      setSessions(filtered.sort((a, b) => b.startTs.localeCompare(a.startTs)));
+    if (!open) return;
+    fetchSessions('cw').then((rows) => {
+      setSessions(rows);
     });
-  }, []);
+  }, [open]);
 
-  const flushSession = useCallback(() => {
-    const text = liveTextRef.current.trim();
-    if (!text) return;
-    const session: CWSession = {
-      startTs: liveStartRef.current,
-      endTs: new Date().toISOString(),
-      text,
-      freqHz: liveFreqRef.current,
-      mode: 'cw',
-    };
-    saveCWSession(session).then(() => {
-      setSessions((prev) => {
-        const withId = { ...session, id: Date.now() };
-        return [withId, ...prev];
-      });
-    });
+  const resetLive = useCallback(() => {
     liveTextRef.current = '';
     liveStartRef.current = '';
     setLiveText('');
     setLiveTokens([]);
     setLiveStartTs('');
   }, []);
-
-  const resetTimer = useCallback(() => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => {
-      flushSession();
-    }, SESSION_TIMEOUT_MS);
-  }, [flushSession]);
 
   useEffect(() => {
     if (!open) return;
@@ -245,12 +222,22 @@ function useCWState(open: boolean): SessionState {
           liveTextRef.current += msg.char;
           setLiveText(liveTextRef.current);
           setLiveTokens((prev) => [...prev, makeToken(msg.char)]);
-          resetTimer();
         } else if (msg.type === 'word_space') {
           liveTextRef.current += ' ';
           setLiveText(liveTextRef.current);
           setLiveTokens((prev) => [...prev, makeToken(' ')]);
-          resetTimer();
+        } else if (msg.type === 'session') {
+          // Server flushed a session — prepend to history and clear live state
+          const saved: ApiSession = {
+            id: msg.id,
+            mode: msg.mode,
+            start_ts: msg.start_ts,
+            end_ts: msg.end_ts,
+            freq_hz: msg.freq_hz,
+            text: msg.text,
+          };
+          setSessions((prev) => [saved, ...prev]);
+          resetLive();
         }
       };
     }
@@ -260,9 +247,8 @@ function useCWState(open: boolean): SessionState {
     return () => {
       closed = true;
       ws?.close();
-      if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [open, resetTimer]);
+  }, [open, resetLive]);
 
   return {
     sessions,
@@ -318,16 +304,14 @@ function SessionPanel({ state, hintText }: { state: SessionState; hintText: stri
           <button
             key={s.id}
             type="button"
-            onClick={() => {
-              if (s.id !== undefined) setSelectedId(s.id);
-            }}
+            onClick={() => setSelectedId(s.id)}
             className={`w-full text-left px-4 py-3 border-b border-white/6 transition-colors flex items-start gap-2
               ${selectedId === s.id ? 'bg-white/8' : 'hover:bg-white/4'}`}
           >
             <StatusDot live={false} />
             <div className="min-w-0">
-              <p className="text-xs text-white/70 font-mono">{formatTime(s.startTs)}</p>
-              <p className="text-[10px] text-white/30 font-mono">{formatFreq(s.freqHz)}</p>
+              <p className="text-xs text-white/70 font-mono">{formatTime(s.start_ts)}</p>
+              <p className="text-[10px] text-white/30 font-mono">{formatFreq(s.freq_hz)}</p>
               <p className="text-[10px] text-white/50 font-mono truncate mt-0.5">
                 {s.text.slice(0, 30)}
               </p>
@@ -365,11 +349,11 @@ function SessionPanel({ state, hintText }: { state: SessionState; hintText: stri
           <>
             <div className="flex items-center gap-2 mb-3">
               <p className="text-white/30 text-xs flex-1">
-                {formatTime(selectedSession.startTs)}
+                {formatTime(selectedSession.start_ts)}
                 {' – '}
-                {formatTime(selectedSession.endTs)}
+                {formatTime(selectedSession.end_ts)}
                 {' · '}
-                {formatFreq(selectedSession.freqHz)}
+                {formatFreq(selectedSession.freq_hz)}
               </p>
               <CopyButton text={selectedSession.text} />
             </div>

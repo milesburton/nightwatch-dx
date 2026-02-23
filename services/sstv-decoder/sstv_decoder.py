@@ -31,14 +31,16 @@ import numpy as np
 from aiohttp import web
 from PIL import Image
 
+import store
+
 # -- Configuration -------------------------------------------------------------
 
-MUX_HOST = os.environ.get("MUX_HOST", "rtl-bridge")
-MUX_PORT = int(os.environ.get("MUX_PORT", "1238"))
-WS_PORT  = int(os.environ.get("WS_PORT",  "8766"))
+MUX_HOST     = os.environ.get("MUX_HOST", "rtl-bridge")
+MUX_PORT     = int(os.environ.get("MUX_PORT", "1238"))
+WS_PORT      = int(os.environ.get("WS_PORT",  "8766"))
+SSTV_FREQ_HZ = 14_230_000
 
 AUDIO_RATE   = 24_000
-SSTV_FREQ_HZ = 14_230_000
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [sstv] %(message)s")
 log = logging.getLogger(__name__)
@@ -349,6 +351,12 @@ def image_to_data_url(img: Image.Image) -> str:
     b64 = base64.b64encode(buf.getvalue()).decode()
     return f"data:image/png;base64,{b64}"
 
+
+def img_to_bytes(img: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    img.save(buf, format='PNG')
+    return buf.getvalue()
+
 # -- WebSocket broadcast hub ---------------------------------------------------
 
 class Hub:
@@ -433,13 +441,15 @@ async def iq_reader(hub: Hub) -> None:
                     img = await loop.run_in_executor(
                         None, decode_image, frame_audio, vis_code, AUDIO_RATE
                     )
-                    data_url = image_to_data_url(img)
                     ts = datetime.now(UTC).isoformat()
+                    png_bytes = await loop.run_in_executor(None, img_to_bytes, img)
+                    row_id, filepath = await store.save_frame('sstv', ts, SSTV_FREQ_HZ, png_bytes)
                     await hub.broadcast({
                         'type': 'frame',
-                        'imageDataUrl': data_url,
+                        'id': row_id,
                         'mode': mode_name,
                         'ts': ts,
+                        'url': f'/frames/{filepath}',
                     })
 
             drain_task.cancel()
@@ -472,6 +482,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
 
 
 async def main() -> None:
+    await store.init_db()
     hub = Hub()
     app = web.Application()
     app['hub'] = hub

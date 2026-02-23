@@ -1,33 +1,35 @@
 /**
  * EasyPalGalleryPanel — automatically detects and decodes EasyPal transmissions.
  *
- * Receives pre-decoded PNG frames from the easypal-decoder Python backend via
- * WebSocket at /ws/easypal. Persists frames in IndexedDB (max 100).
+ * Frame history is loaded from the REST API (/api/frames?mode=easypal) on panel
+ * open. Live frame notifications arrive via WebSocket at /ws/easypal; frames are
+ * served as static PNG files from /frames/easypal/...
  *
  * Gallery: newest first, 3-column grid.
  */
 
 import { useEffect, useState } from 'react';
-import type { EasyPalFrame } from '../utils/db.js';
-import { listEasyPal, saveEasyPal } from '../utils/db.js';
+import type { ApiFrame } from '../utils/api.js';
+import { fetchFrames } from '../utils/api.js';
 import { useAccordion } from '../utils/useAccordion.js';
 
 type EasyPalBackendMessage =
-  | { type: 'frame'; imageDataUrl: string; ts: string }
+  | { type: 'frame'; id: number; ts: string; url: string }
   | { type: 'status'; connected: boolean }
   | { type: 'error'; message: string };
 
 export function EasyPalGalleryPanel() {
   const [open, toggleOpen] = useAccordion('easypal-open');
-  const [frames, setFrames] = useState<EasyPalFrame[]>([]);
+  const [frames, setFrames] = useState<ApiFrame[]>([]);
   const [connected, setConnected] = useState(false);
 
-  // Load persisted frames on mount (newest first)
+  // Load frame history from REST on panel open
   useEffect(() => {
-    listEasyPal().then((rows) => {
-      setFrames(rows.sort((a, b) => b.ts.localeCompare(a.ts)));
+    if (!open) return;
+    fetchFrames('easypal').then((rows) => {
+      setFrames(rows);
     });
-  }, []);
+  }, [open]);
 
   // WebSocket to /ws/easypal — only while open
   useEffect(() => {
@@ -35,7 +37,6 @@ export function EasyPalGalleryPanel() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     let ws: WebSocket | null = null;
     let closed = false;
-    let frameCounter = Date.now();
 
     function connect() {
       if (closed) return;
@@ -57,12 +58,13 @@ export function EasyPalGalleryPanel() {
         if (msg.type === 'status') {
           setConnected(msg.connected);
         } else if (msg.type === 'frame') {
-          const frame: EasyPalFrame = {
-            id: frameCounter++,
+          const frame: ApiFrame = {
+            id: msg.id,
+            mode: 'easypal',
             ts: msg.ts,
-            imageUrl: msg.imageDataUrl,
+            freq_hz: 14_233_000,
+            url: msg.url,
           };
-          void saveEasyPal(frame);
           setFrames((prev) => [frame, ...prev]);
         }
       };
@@ -118,7 +120,7 @@ export function EasyPalGalleryPanel() {
                   className="border border-white/10 rounded-lg overflow-hidden bg-black/30"
                 >
                   <img
-                    src={frame.imageUrl}
+                    src={frame.url}
                     alt="EasyPal frame"
                     className="w-full h-auto block"
                   />

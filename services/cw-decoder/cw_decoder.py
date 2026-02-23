@@ -12,9 +12,13 @@ import psutil
 import numpy as np
 from aiohttp import web
 
+import store
+
 MUX_HOST = os.environ.get("MUX_HOST", "rtl-bridge")
 MUX_PORT = int(os.environ.get("MUX_PORT", "1237"))
 WS_PORT  = int(os.environ.get("WS_PORT",  "8765"))
+
+SESSION_TIMEOUT_S = 30
 
 # Audio stream constants -- received pre-decimated at AUDIO_RATE from rtl-bridge AudioMux
 AUDIO_RATE  = 24_000
@@ -365,12 +369,45 @@ async def _drain_tcp(
         await queue.put(None)
 
 
+async def _flush_cw_session(hub: Hub, live_text: str, start_ts: str,
+                            end_ts: str, freq_hz: int) -> None:
+    """Save a completed CW session to SQLite and notify clients."""
+    text = live_text.strip()
+    if not text:
+        return
+    try:
+        row_id = await store.save_session('cw', start_ts, end_ts, freq_hz, text)
+        await hub.broadcast({
+            'type': 'session', 'id': row_id, 'mode': 'cw',
+            'start_ts': start_ts, 'end_ts': end_ts,
+            'freq_hz': freq_hz, 'text': text,
+        })
+        log.info("CW session saved: id=%d  len=%d chars", row_id, len(text))
+    except Exception as e:
+        log.error("failed to save CW session: %s", e)
+
+
 async def iq_reader(hub: Hub) -> None:
     loop = asyncio.get_running_loop()
 
     while True:
         chain  = CWSignalChain()
         writer = None
+        # Session accumulator (30 s inactivity → flush).
+        # Stored as a mutable dict so nested callbacks can mutate without nonlocal.
+        sess: dict = {'text': '', 'start_ts': '', 'freq_hz': CW_FREQ_HZ, 'timer': None}
+
+        def _reset_flush_timer() -> None:
+            if sess['timer'] is not None:
+                sess['timer'].cancel()
+            sess['timer'] = loop.call_later(
+                SESSION_TIMEOUT_S,
+                lambda: asyncio.ensure_future(
+                    _flush_cw_session(hub, sess['text'], sess['start_ts'],
+                                      datetime.now(UTC).isoformat(), sess['freq_hz'])
+                ),
+            )
+
         try:
             log.info("connecting to %s:%d...", MUX_HOST, MUX_PORT)
             reader, writer = await asyncio.open_connection(MUX_HOST, MUX_PORT)
@@ -390,12 +427,25 @@ async def iq_reader(hub: Hub) -> None:
                 events = await loop.run_in_executor(None, chain.process, chunk)
                 for ev in events:
                     await hub.broadcast(ev)
+                    # Accumulate text for server-side session persistence
+                    if ev['type'] == 'char':
+                        if not sess['start_ts']:
+                            sess['start_ts'] = ev['ts']
+                        sess['freq_hz']  = ev.get('freq', CW_FREQ_HZ)
+                        sess['text']    += ev['char']
+                        _reset_flush_timer()
+                    elif ev['type'] == 'word_space':
+                        if sess['text']:
+                            sess['text'] += ' '
+                            _reset_flush_timer()
 
             drain_task.cancel()
 
         except Exception as e:
             log.warning("mux connection lost: %s, retrying in 5s...", e)
         finally:
+            if sess['timer'] is not None:
+                sess['timer'].cancel()
             if writer is not None:
                 with contextlib.suppress(Exception):
                     writer.close()
@@ -532,6 +582,7 @@ async def supervised_iq_reader(hub: Hub) -> None:
 
 
 async def main() -> None:
+    await store.init_db()
     hub = Hub()
     app = web.Application()
     app['hub'] = hub

@@ -1,7 +1,7 @@
 FROM python:3.11-slim
 WORKDIR /app
-COPY services/cw-decoder/requirements.txt .
+COPY services/api/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY services/store.py .
-COPY services/cw-decoder/ .
-CMD ["python", "-u", "cw_decoder.py"]
+COPY services/api/api.py .
+CMD ["python", "-u", "api.py"]

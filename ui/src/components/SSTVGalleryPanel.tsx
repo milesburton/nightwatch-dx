@@ -1,33 +1,35 @@
 /**
  * SSTVGalleryPanel — automatically detects and decodes SSTV transmissions.
  *
- * Receives pre-decoded PNG frames from the sstv-decoder Python backend via
- * WebSocket at /ws/sstv. Persists frames in IndexedDB (max 100).
+ * Frame history is loaded from the REST API (/api/frames?mode=sstv) on panel
+ * open. Live frame notifications arrive via WebSocket at /ws/sstv; frames are
+ * served as static PNG files from /frames/sstv/...
  *
  * Gallery: newest first, 3-column grid.
  */
 
 import { useEffect, useState } from 'react';
-import type { SSTVFrame } from '../utils/db.js';
-import { listSSTV, saveSSTV } from '../utils/db.js';
+import type { ApiFrame } from '../utils/api.js';
+import { fetchFrames } from '../utils/api.js';
 import { useAccordion } from '../utils/useAccordion.js';
 
 type SSTVBackendMessage =
-  | { type: 'frame'; imageDataUrl: string; mode: string; ts: string }
+  | { type: 'frame'; id: number; mode: string; ts: string; url: string }
   | { type: 'status'; connected: boolean }
   | { type: 'error'; message: string };
 
 export function SSTVGalleryPanel() {
   const [open, toggleOpen] = useAccordion('sstv-open');
-  const [frames, setFrames] = useState<SSTVFrame[]>([]);
+  const [frames, setFrames] = useState<ApiFrame[]>([]);
   const [connected, setConnected] = useState(false);
 
-  // Load persisted frames on mount (newest first)
+  // Load frame history from REST on panel open
   useEffect(() => {
-    listSSTV().then((rows) => {
-      setFrames(rows.sort((a, b) => b.ts.localeCompare(a.ts)));
+    if (!open) return;
+    fetchFrames('sstv').then((rows) => {
+      setFrames(rows);
     });
-  }, []);
+  }, [open]);
 
   // WebSocket to /ws/sstv — only while open
   useEffect(() => {
@@ -35,7 +37,6 @@ export function SSTVGalleryPanel() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
     let ws: WebSocket | null = null;
     let closed = false;
-    let frameCounter = Date.now();
 
     function connect() {
       if (closed) return;
@@ -57,13 +58,13 @@ export function SSTVGalleryPanel() {
         if (msg.type === 'status') {
           setConnected(msg.connected);
         } else if (msg.type === 'frame') {
-          const frame: SSTVFrame = {
-            id: frameCounter++,
-            ts: msg.ts,
-            imageUrl: msg.imageDataUrl,
+          const frame: ApiFrame = {
+            id: msg.id,
             mode: msg.mode,
+            ts: msg.ts,
+            freq_hz: 14_230_000,
+            url: msg.url,
           };
-          void saveSSTV(frame);
           setFrames((prev) => [frame, ...prev]);
         }
       };
@@ -119,7 +120,7 @@ export function SSTVGalleryPanel() {
                   className="border border-white/10 rounded-lg overflow-hidden bg-black/30"
                 >
                   <img
-                    src={frame.imageUrl}
+                    src={frame.url}
                     alt={`SSTV ${frame.mode}`}
                     className="w-full h-auto block"
                   />

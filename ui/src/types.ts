@@ -12,6 +12,7 @@ export type CWSocketMessage =
   | { type: 'char'; ts: string; char: string; freq: number; power: number }
   | { type: 'word_space' }
   | { type: 'status'; connected: boolean; freq: number }
+  | { type: 'session'; id: number; mode: string; start_ts: string; end_ts: string; freq_hz: number; text: string }
   | { type: 'error'; message: string };
 
 // ── Spectrum / waterfall types ────────────────────────────────────────────────

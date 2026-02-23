@@ -40,6 +40,8 @@ import numpy as np
 from aiohttp import web
 from PIL import Image
 
+import store
+
 # ── Configuration ──────────────────────────────────────────────────────────────
 
 MUX_HOST = os.environ.get("MUX_HOST", "rtl-bridge")
@@ -623,6 +625,12 @@ def image_to_data_url(img: Image.Image) -> str:
     return f"data:image/png;base64,{b64}"
 
 
+def img_to_bytes(img: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    img.convert('RGB').save(buf, format='PNG')
+    return buf.getvalue()
+
+
 async def iq_reader(hub: Hub) -> None:
     chain     = IQSignalChain()
     baseband  = AudioToBaseband()
@@ -677,12 +685,14 @@ async def iq_reader(hub: Hub) -> None:
                 imgs = await loop.run_in_executor(None, _process_chunk, chunk)
                 for img in imgs:
                     log.info("EasyPal frame decoded (%dx%d)", img.width, img.height)
-                    data_url = await loop.run_in_executor(None, image_to_data_url, img)
-                    ts       = datetime.now(UTC).isoformat()
+                    ts        = datetime.now(UTC).isoformat()
+                    png_bytes = await loop.run_in_executor(None, img_to_bytes, img)
+                    row_id, filepath = await store.save_frame('easypal', ts, EASYPAL_FREQ_HZ, png_bytes)
                     await hub.broadcast({
-                        'type':         'frame',
-                        'imageDataUrl': data_url,
-                        'ts':           ts,
+                        'type': 'frame',
+                        'id':   row_id,
+                        'ts':   ts,
+                        'url':  f'/frames/{filepath}',
                     })
 
             drain_task.cancel()
@@ -715,6 +725,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
 
 
 async def main() -> None:
+    await store.init_db()
     hub = Hub()
     app = web.Application()
     app['hub'] = hub

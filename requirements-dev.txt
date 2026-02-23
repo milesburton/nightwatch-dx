@@ -4,6 +4,7 @@ pytest-asyncio
 websockets
 # Service runtime deps needed for tests
 aiohttp>=3.9
+aiosqlite>=0.19
 numpy>=1.26
 psutil>=5.9
 scipy>=1.12

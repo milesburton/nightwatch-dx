@@ -1,4 +1,5 @@
 aiohttp>=3.9
+aiosqlite>=0.19
 numpy>=1.26
 psutil>=5.9
 pytest>=7.0
