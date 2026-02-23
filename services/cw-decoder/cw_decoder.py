@@ -30,8 +30,11 @@ THRESHOLD_FAST_INTERVAL   = DIT_SAMPLES * 2   # ~2 dits — fast adapt at startu
 
 # Narrow bandpass half-bandwidth around DC (the CW tone has already been mixed
 # to DC by rtl-bridge's AudioDecimator). Keep only +/-BP_HZ.
-# 500 Hz passes +/-50 Hz operator drift and rejects adjacent SSB / other CW.
-BP_HZ = 500
+# 150 Hz is narrow enough to pass a single CW station while rejecting adjacent
+# signals. A station within ±150 Hz of 14.029 MHz is solidly in the bandpass.
+# The original 500 Hz was designed for the pre-decimated IQ path and is far
+# too wide here — adjacent CW and SSB sidebands corrupt the Schmitt trigger.
+BP_HZ = 150
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [cw] %(message)s")
 log = logging.getLogger(__name__)
@@ -248,9 +251,9 @@ MORSE_CODE: dict[str, str] = {
     '...-..-': '$', '.--.-.': '@',
 }
 
-DAH_THRESHOLD = 2.0
-CHAR_GAP_DITS = 2.0
-WORD_GAP_DITS = 4.5
+DAH_THRESHOLD = 2.5   # dah = duration > 2.5× dit (ITU standard: dah = 3× dit)
+CHAR_GAP_DITS = 2.5   # inter-character gap > 2.5× dit triggers char decode
+WORD_GAP_DITS = 5.0   # inter-word gap > 5× dit triggers word space
 
 
 class MorseDecoder:

@@ -57,11 +57,11 @@ def render_audio(intervals: list[tuple[bool, int]], amplitude: float = 0.6,
                  noise_amplitude: float = 0.02) -> bytes:
     """Generate complex64 audio bytes at AUDIO_RATE.
 
-    CW tone at 100 Hz -- within the +/-BP_HZ (500 Hz) bandpass filter.
+    CW tone at 100 Hz -- within the +/-BP_HZ bandpass filter.
     """
     total = sum(n for _, n in intervals)
     iq    = np.zeros(total, dtype=np.complex64)
-    # 100 Hz tone (well within the 500 Hz bandpass)
+    # 100 Hz tone (well within the 150 Hz bandpass)
     step  = 2 * math.pi * 100.0 / AUDIO_RATE
     rng   = np.random.default_rng(42)
     phase = 0.0
