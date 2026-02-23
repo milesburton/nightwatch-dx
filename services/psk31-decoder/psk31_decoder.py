@@ -425,13 +425,21 @@ async def iq_reader(hub: Hub) -> None:
         def _reset_flush_timer() -> None:
             if sess['timer'] is not None:
                 sess['timer'].cancel()
-            sess['timer'] = loop.call_later(
-                SESSION_TIMEOUT_S,
-                lambda: asyncio.ensure_future(
-                    _flush_psk31_session(hub, sess['text'], sess['start_ts'],
-                                         datetime.now(UTC).isoformat(), sess['freq_hz'])
-                ),
-            )
+
+            def _fire() -> None:
+                text     = sess['text']
+                start_ts = sess['start_ts']
+                freq_hz  = sess['freq_hz']
+                # Clear immediately so a double-fire or reconnect doesn't re-save
+                sess['text']     = ''
+                sess['start_ts'] = ''
+                sess['timer']    = None
+                asyncio.ensure_future(
+                    _flush_psk31_session(hub, text, start_ts,
+                                         datetime.now(UTC).isoformat(), freq_hz)
+                )
+
+            sess['timer'] = loop.call_later(SESSION_TIMEOUT_S, _fire)
         try:
             log.info("connecting to %s:%d...", MUX_HOST, MUX_PORT)
             reader, writer = await asyncio.open_connection(MUX_HOST, MUX_PORT)
