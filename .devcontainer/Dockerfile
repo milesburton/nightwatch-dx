@@ -19,7 +19,11 @@ RUN pip install --no-cache-dir -r /tmp/requirements-dev.txt
 COPY services/cw-decoder/requirements.txt /tmp/cw-requirements.txt
 COPY services/sstv-decoder/requirements.txt /tmp/sstv-requirements.txt
 COPY services/rtl-bridge/requirements.txt /tmp/rtl-requirements.txt
+COPY services/psk31-decoder/requirements.txt /tmp/psk31-requirements.txt
+COPY services/easypal-decoder/requirements.txt /tmp/easypal-requirements.txt
 RUN pip install --no-cache-dir \
     -r /tmp/cw-requirements.txt \
     -r /tmp/sstv-requirements.txt \
-    -r /tmp/rtl-requirements.txt
+    -r /tmp/rtl-requirements.txt \
+    -r /tmp/psk31-requirements.txt \
+    -r /tmp/easypal-requirements.txt

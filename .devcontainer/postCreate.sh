@@ -9,12 +9,12 @@ FISH_CONFIG_DIR="$HOME/.config/fish"
 mkdir -p "$FISH_CONFIG_DIR"
 
 cat > "$FISH_CONFIG_DIR/config.fish" << 'EOF'
-# dx-watch dev container
+# nightwatch-dx dev container
 
 # Show MOTD on interactive login shells only
 if status is-interactive
     echo ""
-    echo "  dx-watch — live HF monitoring" | lolcat
+    echo "  nightwatch-dx — live HF monitoring" | lolcat
     echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━" | lolcat
     echo ""
     echo "  Listens on 14 MHz (20m) via RTL-SDR + HF upconverter."

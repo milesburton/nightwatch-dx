@@ -1,6 +1,6 @@
 # Architecture
 
-dx-watch is built around six Docker services that communicate over a Docker bridge network.
+nightwatch-dx is built around six Docker services that communicate over a Docker bridge network.
 
 ## Service overview
 

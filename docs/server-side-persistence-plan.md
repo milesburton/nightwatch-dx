@@ -43,7 +43,7 @@ over WebSocket directly to the browser. The browser stores it in IndexedDB.
 
 ## Database Schema
 
-Single SQLite file: `/data/dx-watch.db`
+Single SQLite file: `/data/nightwatch-dx.db`
 Shared between all containers via a named Docker volume `dx-data`.
 
 ```sql
@@ -131,7 +131,7 @@ Response shapes:
 import aiosqlite, os, asyncio
 from datetime import UTC, datetime
 
-DB_PATH = os.environ.get("DB_PATH", "/data/dx-watch.db")
+DB_PATH = os.environ.get("DB_PATH", "/data/nightwatch-dx.db")
 
 async def init_db():
     async with aiosqlite.connect(DB_PATH) as db:
@@ -241,13 +241,13 @@ Mounted at `/data` in: `api`, `cw-decoder`, `psk31-decoder`, `sstv-decoder`,
 
 ```yaml
 api:
-  image: ghcr.io/milesburton/dx-watch/api:latest
-  container_name: dx-watch-api
+  image: ghcr.io/milesburton/nightwatch-dx/api:latest
+  container_name: nightwatch-dx-api
   restart: unless-stopped
   volumes:
     - dx-data:/data
   environment:
-    DB_PATH: /data/dx-watch.db
+    DB_PATH: /data/nightwatch-dx.db
     FRAMES_DIR: /data/frames
     WS_PORT: "8900"
   depends_on:
@@ -351,7 +351,7 @@ Work through these steps in sequence. Each step should pass `npx tsc --noEmit`
 - [ ] EasyPal panel: same
 - [ ] Reload the page: all history is still visible (was fetched from server, not IndexedDB)
 - [ ] Close browser, reopen: history still present
-- [ ] `docker logs dx-watch-api` — retention sweep runs without errors after 1 hour
+- [ ] `docker logs nightwatch-dx-api` — retention sweep runs without errors after 1 hour
 
 ---
 

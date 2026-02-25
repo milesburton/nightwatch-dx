@@ -258,9 +258,9 @@ function Subtitle({
 function useDocumentTitle(hwDown: boolean, iqConnected: boolean, cwActive: boolean, sstActive: boolean, easypalActive: boolean, psk31Active: boolean) {
   useEffect(() => {
     if (hwDown) {
-      document.title = '⚠ Offline — dx-watch';
+      document.title = '⚠ Offline — nightwatch-dx';
     } else if (!iqConnected) {
-      document.title = 'Connecting… — dx-watch';
+      document.title = 'Connecting… — nightwatch-dx';
     } else {
       const active: string[] = [];
       if (cwActive) active.push('CW');
@@ -268,9 +268,9 @@ function useDocumentTitle(hwDown: boolean, iqConnected: boolean, cwActive: boole
       if (sstActive) active.push('SSTV');
       if (easypalActive) active.push('EasyPal');
       if (active.length > 0) {
-        document.title = `● ${active.join(' + ')} — dx-watch`;
+        document.title = `● ${active.join(' + ')} — nightwatch-dx`;
       } else {
-        document.title = 'Scanning 20m — dx-watch';
+        document.title = 'Scanning 20m — nightwatch-dx';
       }
     }
   }, [hwDown, iqConnected, cwActive, sstActive, easypalActive, psk31Active]);
@@ -308,7 +308,7 @@ export default function App() {
       <div className="w-full max-w-7xl mx-auto px-6 py-10">
         <header className="text-center mb-10">
           <h1 className="text-5xl font-bold mb-3 tracking-tight text-white drop-shadow-lg">
-            dx-watch
+            nightwatch-dx
           </h1>
           <Subtitle
             iqConnected={iqConnected}
@@ -335,12 +335,12 @@ export default function App() {
           </div>
           <div>
             <a
-              href="https://github.com/milesburton/dx-watch"
+              href="https://github.com/milesburton/nightwatch-dx"
               target="_blank"
               rel="noopener noreferrer"
               className="text-white/40 hover:text-white/70 transition-colors"
             >
-              milesburton/dx-watch
+              milesburton/nightwatch-dx
             </a>
           </div>
         </footer>

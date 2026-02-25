@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# deploy.sh — deploy dx-watch to the home-lab server
+# deploy.sh — deploy nightwatch-dx to the home-lab server
 #
 # Usage:
 #   ./scripts/deploy.sh              # full deploy (git pull + docker compose build + up)
@@ -8,7 +8,7 @@
 #
 # Required environment variables (set in .env.deploy, which is gitignored):
 #   SERVER  — ssh target, e.g. user@192.168.1.x
-#   REPO    — repo path on server, e.g. ~/code/dx-watch
+#   REPO    — repo path on server, e.g. ~/code/nightwatch-dx
 #
 # Quick start:
 #   cp .env.deploy.example .env.deploy   # fill in your values
@@ -26,11 +26,11 @@ fi
 
 : "${SERVER:?Set SERVER=user@host in .env.deploy or environment}"
 : "${REPO:?Set REPO=~/path/to/repo in .env.deploy or environment}"
-UI_CONTAINER="dx-watch-ui"
+UI_CONTAINER="nightwatch-dx-ui"
 NGINX_ROOT="/usr/share/nginx/html"
 MODE="${1:-full}"
 
-echo "=== dx-watch deploy: mode=$MODE target=$SERVER ==="
+echo "=== nightwatch-dx deploy: mode=$MODE target=$SERVER ==="
 
 # ── Fast UI deploy ────────────────────────────────────────────────────────────
 if [[ "$MODE" == "ui" ]]; then

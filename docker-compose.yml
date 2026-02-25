@@ -2,11 +2,11 @@ services:
 
   # ── RTL-SDR hardware interface + IQ multiplexer ───────────────────────────
   rtl-bridge:
-    image: ghcr.io/milesburton/dx-watch/rtl-bridge:latest
+    image: ghcr.io/milesburton/nightwatch-dx/rtl-bridge:latest
     build:
       context: .
       dockerfile: docker/rtl-bridge/Dockerfile
-    container_name: dx-watch-rtl-bridge
+    container_name: nightwatch-dx-rtl-bridge
     restart: unless-stopped
     devices:
       - /dev/bus/usb:/dev/bus/usb
@@ -26,11 +26,11 @@ services:
 
   # ── CW decoder ────────────────────────────────────────────────────────────
   cw-decoder:
-    image: ghcr.io/milesburton/dx-watch/cw-decoder:latest
+    image: ghcr.io/milesburton/nightwatch-dx/cw-decoder:latest
     build:
       context: .
       dockerfile: docker/cw-decoder/Dockerfile
-    container_name: dx-watch-cw-decoder
+    container_name: nightwatch-dx-cw-decoder
     restart: unless-stopped
     depends_on:
       - rtl-bridge
@@ -38,18 +38,18 @@ services:
       MUX_HOST: "rtl-bridge"
       MUX_PORT: "1237"
       WS_PORT: "8765"
-      DB_PATH: "/data/dx-watch.db"
+      DB_PATH: "/data/nightwatch-dx.db"
       FRAMES_DIR: "/data/frames"
     volumes:
       - dx-data:/data
 
   # ── SSTV decoder ──────────────────────────────────────────────────────────
   sstv-decoder:
-    image: ghcr.io/milesburton/dx-watch/sstv-decoder:latest
+    image: ghcr.io/milesburton/nightwatch-dx/sstv-decoder:latest
     build:
       context: .
       dockerfile: docker/sstv-decoder/Dockerfile
-    container_name: dx-watch-sstv-decoder
+    container_name: nightwatch-dx-sstv-decoder
     restart: unless-stopped
     depends_on:
       - rtl-bridge
@@ -57,18 +57,18 @@ services:
       MUX_HOST: "rtl-bridge"
       MUX_PORT: "1238"
       WS_PORT: "8766"
-      DB_PATH: "/data/dx-watch.db"
+      DB_PATH: "/data/nightwatch-dx.db"
       FRAMES_DIR: "/data/frames"
     volumes:
       - dx-data:/data
 
   # ── EasyPal decoder ───────────────────────────────────────────────────────
   easypal-decoder:
-    image: ghcr.io/milesburton/dx-watch/easypal-decoder:latest
+    image: ghcr.io/milesburton/nightwatch-dx/easypal-decoder:latest
     build:
       context: .
       dockerfile: docker/easypal-decoder/Dockerfile
-    container_name: dx-watch-easypal-decoder
+    container_name: nightwatch-dx-easypal-decoder
     restart: unless-stopped
     depends_on:
       - rtl-bridge
@@ -76,18 +76,18 @@ services:
       MUX_HOST: "rtl-bridge"
       MUX_PORT: "1239"
       WS_PORT: "8767"
-      DB_PATH: "/data/dx-watch.db"
+      DB_PATH: "/data/nightwatch-dx.db"
       FRAMES_DIR: "/data/frames"
     volumes:
       - dx-data:/data
 
   # ── PSK31 decoder ─────────────────────────────────────────────────────────
   psk31-decoder:
-    image: ghcr.io/milesburton/dx-watch/psk31-decoder:latest
+    image: ghcr.io/milesburton/nightwatch-dx/psk31-decoder:latest
     build:
       context: .
       dockerfile: docker/psk31-decoder/Dockerfile
-    container_name: dx-watch-psk31-decoder
+    container_name: nightwatch-dx-psk31-decoder
     restart: unless-stopped
     depends_on:
       - rtl-bridge
@@ -95,18 +95,18 @@ services:
       MUX_HOST: "rtl-bridge"
       MUX_PORT: "1240"
       WS_PORT: "8768"
-      DB_PATH: "/data/dx-watch.db"
+      DB_PATH: "/data/nightwatch-dx.db"
       FRAMES_DIR: "/data/frames"
     volumes:
       - dx-data:/data
 
   # ── API service ───────────────────────────────────────────────────────────
   api:
-    image: ghcr.io/milesburton/dx-watch/api:latest
+    image: ghcr.io/milesburton/nightwatch-dx/api:latest
     build:
       context: .
       dockerfile: docker/api/Dockerfile
-    container_name: dx-watch-api
+    container_name: nightwatch-dx-api
     restart: unless-stopped
     depends_on:
       - cw-decoder
@@ -114,7 +114,7 @@ services:
       - sstv-decoder
       - easypal-decoder
     environment:
-      DB_PATH: "/data/dx-watch.db"
+      DB_PATH: "/data/nightwatch-dx.db"
       FRAMES_DIR: "/data/frames"
       API_PORT: "8900"
     volumes:
@@ -122,11 +122,11 @@ services:
 
   # ── Web UI ────────────────────────────────────────────────────────────────
   ui:
-    image: ghcr.io/milesburton/dx-watch/ui:latest
+    image: ghcr.io/milesburton/nightwatch-dx/ui:latest
     build:
       context: .
       dockerfile: docker/ui/Dockerfile
-    container_name: dx-watch-ui
+    container_name: nightwatch-dx-ui
     restart: unless-stopped
     depends_on:
       - rtl-bridge
