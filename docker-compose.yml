@@ -26,6 +26,12 @@ services:
       RTL_FREQUENCY: "${RTL_FREQUENCY:-139131000}"
       RTL_SAMPLE_RATE: "${RTL_SAMPLE_RATE:-1200000}"
       RTL_GAIN: "${RTL_GAIN:-77}"
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',1235)); s.close()\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   # ── CW decoder ────────────────────────────────────────────────────────────
   cw-decoder:
@@ -45,6 +51,12 @@ services:
       FRAMES_DIR: "${FRAMES_DIR:-/data/frames}"
     volumes:
       - dx-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8765)); s.close()\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # ── SSTV decoder ──────────────────────────────────────────────────────────
   sstv-decoder:
@@ -64,6 +76,12 @@ services:
       FRAMES_DIR: "${FRAMES_DIR:-/data/frames}"
     volumes:
       - dx-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8766)); s.close()\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # ── EasyPal decoder ───────────────────────────────────────────────────────
   easypal-decoder:
@@ -83,6 +101,12 @@ services:
       FRAMES_DIR: "${FRAMES_DIR:-/data/frames}"
     volumes:
       - dx-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8767)); s.close()\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # ── PSK31 decoder ─────────────────────────────────────────────────────────
   psk31-decoder:
@@ -102,6 +126,12 @@ services:
       FRAMES_DIR: "${FRAMES_DIR:-/data/frames}"
     volumes:
       - dx-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('127.0.0.1',8768)); s.close()\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # ── API service ───────────────────────────────────────────────────────────
   api:
@@ -122,6 +152,12 @@ services:
       API_PORT: "${API_PORT:-8900}"
     volumes:
       - dx-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8900/api/health')\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # ── Web UI ────────────────────────────────────────────────────────────────
   ui:
@@ -140,6 +176,12 @@ services:
       - api
     ports:
       - "${UI_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:80/ > /dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 volumes:
   dx-data:    # persistent storage shared by all decoders and the api service

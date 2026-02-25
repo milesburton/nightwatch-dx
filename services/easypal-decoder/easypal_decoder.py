@@ -92,6 +92,8 @@ class IQSignalChain:
     def process(self, raw: bytes) -> np.ndarray:
         """raw: complex64 bytes at AUDIO_RATE from rtl-bridge. Returns FM audio in Hz."""
         audio_c = np.frombuffer(raw, dtype=np.complex64)
+        if len(audio_c) == 0:
+            return np.empty(0, dtype=np.float32)
         i_arr, q_arr = audio_c.real, audio_c.imag
         prev_i       = np.empty(len(audio_c))
         prev_q       = np.empty(len(audio_c))
