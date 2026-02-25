@@ -49,4 +49,3 @@ config/secrets.yml
 
 # Local-only operational notes (not for public repo)
 docs/local.md
-.env.deploy

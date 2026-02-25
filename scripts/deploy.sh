@@ -2,23 +2,23 @@
 # deploy.sh — deploy nightwatch-dx to the home-lab server
 #
 # Usage:
-#   ./scripts/deploy.sh              # full deploy (git pull + docker compose build + up)
-#   ./scripts/deploy.sh ui           # fast UI-only (build ui + up on server)
-#   ./scripts/deploy.sh <service>    # rebuild + restart a single service (e.g. cw-decoder)
+#   ./scripts/deploy.sh              # full deploy (git pull + docker compose pull + up)
+#   ./scripts/deploy.sh ui           # fast UI-only (pull ui + up on server)
+#   ./scripts/deploy.sh <service>    # pull + restart a single service (e.g. cw-decoder)
 #
-# Required environment variables (set in .env.deploy, which is gitignored):
-#   SERVER  — ssh target, e.g. user@192.168.1.x
-#   REPO    — repo path on server, e.g. ~/code/nightwatch-dx
+# Required variables (set in .env, which is gitignored):
+#   SERVER  — ssh target, e.g. miles@192.168.1.211
+#   REPO    — repo path on server, e.g. ~/nightwatch-dx
 #
 # Quick start:
-#   cp .env.deploy.example .env.deploy   # fill in your values
-#   source .env.deploy && ./scripts/deploy.sh
+#   cp .env.example .env   # fill in your values
+#   ./scripts/deploy.sh
 
 set -euo pipefail
 
-# Load .env.deploy if it exists
+# Load .env if it exists
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-ENV_FILE="$SCRIPT_DIR/../.env.deploy"
+ENV_FILE="$SCRIPT_DIR/../.env"
 if [[ -f "$ENV_FILE" ]]; then
   # shellcheck source=/dev/null
   source "$ENV_FILE"

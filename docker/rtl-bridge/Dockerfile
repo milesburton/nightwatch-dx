@@ -30,7 +30,11 @@ EXPOSE 1235 1236 1237 1238 1239 1240
 #                bandwidth concentrates noise, causing the display to saturate.
 # rtl_biast -b 1 must run first to power the NooElec HF upconverter via bias-T,
 # then release the device so rtl_tcp can claim it.
+ENV RTL_FREQUENCY=139131000
+ENV RTL_SAMPLE_RATE=1200000
+ENV RTL_GAIN=77
+
 CMD rtl_biast -b 1 && \
-    rtl_tcp -a 0.0.0.0 -p 1234 -f 139131000 -s 1200000 -g 77 -T & \
+    rtl_tcp -a 0.0.0.0 -p 1234 -f ${RTL_FREQUENCY} -s ${RTL_SAMPLE_RATE} -g ${RTL_GAIN} -T & \
     sleep 2 && \
     python3 -u rtl_bridge.py

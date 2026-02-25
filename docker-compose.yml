@@ -23,6 +23,9 @@ services:
       RTL_TCP_PORT: "1234"
       MUX_PORT: "1235"
       WS_PORT: "1236"
+      RTL_FREQUENCY: "${RTL_FREQUENCY:-139131000}"
+      RTL_SAMPLE_RATE: "${RTL_SAMPLE_RATE:-1200000}"
+      RTL_GAIN: "${RTL_GAIN:-77}"
 
   # ── CW decoder ────────────────────────────────────────────────────────────
   cw-decoder:
@@ -38,8 +41,8 @@ services:
       MUX_HOST: "rtl-bridge"
       MUX_PORT: "1237"
       WS_PORT: "8765"
-      DB_PATH: "/data/nightwatch-dx.db"
-      FRAMES_DIR: "/data/frames"
+      DB_PATH: "${DB_PATH:-/data/nightwatch-dx.db}"
+      FRAMES_DIR: "${FRAMES_DIR:-/data/frames}"
     volumes:
       - dx-data:/data
 
@@ -57,8 +60,8 @@ services:
       MUX_HOST: "rtl-bridge"
       MUX_PORT: "1238"
       WS_PORT: "8766"
-      DB_PATH: "/data/nightwatch-dx.db"
-      FRAMES_DIR: "/data/frames"
+      DB_PATH: "${DB_PATH:-/data/nightwatch-dx.db}"
+      FRAMES_DIR: "${FRAMES_DIR:-/data/frames}"
     volumes:
       - dx-data:/data
 
@@ -76,8 +79,8 @@ services:
       MUX_HOST: "rtl-bridge"
       MUX_PORT: "1239"
       WS_PORT: "8767"
-      DB_PATH: "/data/nightwatch-dx.db"
-      FRAMES_DIR: "/data/frames"
+      DB_PATH: "${DB_PATH:-/data/nightwatch-dx.db}"
+      FRAMES_DIR: "${FRAMES_DIR:-/data/frames}"
     volumes:
       - dx-data:/data
 
@@ -95,8 +98,8 @@ services:
       MUX_HOST: "rtl-bridge"
       MUX_PORT: "1240"
       WS_PORT: "8768"
-      DB_PATH: "/data/nightwatch-dx.db"
-      FRAMES_DIR: "/data/frames"
+      DB_PATH: "${DB_PATH:-/data/nightwatch-dx.db}"
+      FRAMES_DIR: "${FRAMES_DIR:-/data/frames}"
     volumes:
       - dx-data:/data
 
@@ -114,9 +117,9 @@ services:
       - sstv-decoder
       - easypal-decoder
     environment:
-      DB_PATH: "/data/nightwatch-dx.db"
-      FRAMES_DIR: "/data/frames"
-      API_PORT: "8900"
+      DB_PATH: "${DB_PATH:-/data/nightwatch-dx.db}"
+      FRAMES_DIR: "${FRAMES_DIR:-/data/frames}"
+      API_PORT: "${API_PORT:-8900}"
     volumes:
       - dx-data:/data
 
@@ -136,7 +139,7 @@ services:
       - psk31-decoder
       - api
     ports:
-      - "8080:80"
+      - "${UI_PORT:-8080}:80"
 
 volumes:
   dx-data:    # persistent storage shared by all decoders and the api service
